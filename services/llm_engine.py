@@ -191,7 +191,7 @@ def generate_cover_letter(
 {user_spec}
 {gap_text}
 
-위 정보를 바탕으로 {company} {position} 직무에 지원하는 자기소개서 초안을 작성해주세요.
+위 정보를 바탕으로 {company} {position} 직무에 지원하는 자기소개서 초안을 작성할 것.
 """
 
     messages = [
