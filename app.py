@@ -86,7 +86,7 @@ if uploaded_file is not None:
                     }#headers = {"Authorization": f"Bearer {API 인증키}","Accept":json응답만 받음}
 
                     # API 요청
-                    response = requests.post(API_URL, files=files, data=data, headers=headers, timeout=60)#서버 데이터 보낼 때 씀,(API_URL:FAST API 서버 링크, files=files, data=data, headers=headers, timeout=60:대기 제한 시간)
+                    response = requests.post(API_URL, files=files, data=data, headers=headers, timeout=300)#서버 데이터 보낼 때 씀,(API_URL:FAST API 서버 링크, files=files, data=data, headers=headers, timeout=60:대기 제한 시간)
 
                     if response.status_code == 200:
                         try:
