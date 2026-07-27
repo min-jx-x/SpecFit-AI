@@ -18,80 +18,31 @@ load_dotenv()
 
 OCR_INVOKE_URL_ENV = ("NCP_CLOVA_OCR_INVOKE_URL", "CLOVA_OCR_INVOKE_URL")
 OCR_SECRET_ENV = ("NCP_CLOVA_OCR_SECRET", "CLOVA_OCR_SECRET")
+OCR_FILE_SUFFIXES = {".jpg", ".jpeg", ".png", ".pdf", ".tif", ".tiff"}
+TEXT_FILE_SUFFIXES = {".txt"}
+TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
 
 DEFAULT_TECH_KEYWORDS = {
     "backend": [
-        "Java",
-        "Spring",
-        "Spring Boot",
-        "Python",
-        "FastAPI",
-        "Django",
-        "Node.js",
-        "Express",
-        "REST API",
-        "GraphQL",
-        "Docker",
-        "Kubernetes",
-        "AWS",
-        "NCP",
-        "GCP",
-        "Azure",
-        "Linux",
-        "MySQL",
-        "PostgreSQL",
-        "MongoDB",
-        "Redis",
-        "Kafka",
-        "RabbitMQ",
-        "Git",
-        "GitHub Actions",
-        "CI/CD",
-        "SQL",
+        "Java", "Spring", "Spring Boot", "Python", "FastAPI", "Django",
+        "Node.js", "Express", "REST API", "GraphQL", "Docker", "Kubernetes",
+        "AWS", "NCP", "GCP", "Azure", "Linux", "MySQL", "PostgreSQL",
+        "MongoDB", "Redis", "Kafka", "RabbitMQ", "Git", "GitHub Actions",
+        "CI/CD", "SQL",
     ],
     "data": [
-        "Python",
-        "SQL",
-        "Pandas",
-        "NumPy",
-        "scikit-learn",
-        "PyTorch",
-        "TensorFlow",
-        "LLM",
-        "RAG",
-        "ChromaDB",
-        "LangChain",
-        "Airflow",
-        "Spark",
+        "Python", "SQL", "Pandas", "NumPy", "scikit-learn", "PyTorch",
+        "TensorFlow", "LLM", "RAG", "ChromaDB", "LangChain", "Airflow", "Spark",
     ],
     "certificate": [
-        "SQLD",
-        "ADsP",
-        "정보처리기사",
-        "정보 처리 기사",
-        "정처기",
-        "정보보안기사",
-        "정보 보안 기사",
-        "정보기",
-        "AWS SAA",
-        "AWS Solutions Architect",
-        "CKA",
-        "CKAD",
-        "컴퓨터활용능력",
-        "컴퓨터 활용 능력",
-        "컴활",
+        "SQLD", "ADsP", "정보처리기사", "정보 처리 기사", "정처기",
+        "정보보안기사", "정보 보안 기사", "정보기", "AWS SAA",
+        "AWS Solutions Architect", "CKA", "CKAD", "컴퓨터활용능력",
+        "컴퓨터 활용 능력", "컴활",
     ],
     "language": [
-        "TOEIC",
-        "TOEFL",
-        "OPIc",
-        "OPIC",
-        "IELTS",
-        "TEPS",
-        "TOEIC Speaking",
-        "토익",
-        "토플",
-        "오픽",
+        "TOEIC", "TOEFL", "OPIc", "OPIC", "IELTS", "TEPS",
+        "TOEIC Speaking", "토익", "토플", "오픽",
     ],
 }
 
@@ -146,6 +97,19 @@ def _encode_image(image_path: str | Path) -> str:
         return base64.b64encode(image_file.read()).decode("utf-8")
 
 
+def _read_text_file(text_path: str | Path) -> str:
+    path = Path(text_path)
+    for encoding in TEXT_ENCODINGS:
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(
+        f"Unable to decode text file: {text_path}. "
+        f"Supported encodings: {', '.join(TEXT_ENCODINGS)}"
+    )
+
+
 def build_ocr_payload(
     *,
     image_path: str | Path | None = None,
@@ -160,10 +124,7 @@ def build_ocr_payload(
 
     image_name = Path(image_path).stem if image_path else "remote-image"
     image_format = _image_format(image_path) if image_path else "jpg"
-    image: dict[str, Any] = {
-        "format": image_format,
-        "name": image_name,
-    }
+    image: dict[str, Any] = {"format": image_format, "name": image_name}
 
     if image_path:
         image["data"] = _encode_image(image_path)
@@ -196,7 +157,6 @@ def request_ocr(
         "Content-Type": "application/json",
         "X-OCR-SECRET": resolved_secret,
     }
-
     response = requests.post(
         resolved_url,
         headers=headers,
@@ -223,7 +183,6 @@ def extract_lines(ocr_response: dict[str, Any]) -> list[str]:
             text = (field.get("inferText") or "").strip()
             if not text:
                 continue
-
             current_line.append(text)
             if field.get("lineBreak"):
                 lines.append(" ".join(current_line).strip())
@@ -231,17 +190,15 @@ def extract_lines(ocr_response: dict[str, Any]) -> list[str]:
 
     if current_line:
         lines.append(" ".join(current_line).strip())
-
     if lines:
         return lines
 
-    words = [
+    return [
         (field.get("inferText") or "").strip()
         for image in ocr_response.get("images", [])
         for field in image.get("fields", [])
         if (field.get("inferText") or "").strip()
     ]
-    return words
 
 
 def extract_text(ocr_response: dict[str, Any]) -> str:
@@ -264,11 +221,14 @@ def extract_keywords(
         matches: list[str] = []
         for keyword in keywords:
             escaped = re.escape(keyword)
-            if re.search(rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])", normalized_text, re.I):
+            if re.search(
+                rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])",
+                normalized_text,
+                re.I,
+            ):
                 matches.append(keyword)
         if matches:
             found[group] = sorted(set(matches), key=str.lower)
-
     return found
 
 
@@ -291,9 +251,8 @@ def parse_scores(text: str) -> dict[str, int]:
 def parse_certifications(text: str) -> list[str]:
     """Parse common certificates from OCR text."""
 
-    keywords = DEFAULT_TECH_KEYWORDS["certificate"]
     certifications = []
-    for keyword in keywords:
+    for keyword in DEFAULT_TECH_KEYWORDS["certificate"]:
         if re.search(re.escape(keyword), text, re.I):
             certifications.append(keyword)
     return sorted(set(certifications), key=str.lower)
@@ -309,7 +268,29 @@ def parse_ocr_response(ocr_response: dict[str, Any]) -> dict[str, Any]:
         "keywords": extract_keywords(text),
         "scores": parse_scores(text),
         "certifications": parse_certifications(text),
+        "source_type": "ocr",
         "raw": ocr_response,
+    }
+
+
+def parse_text_content(text: str) -> dict[str, Any]:
+    """Parse plain text using the same spec rules as OCR output."""
+
+    normalized_text = text.strip()
+    if not normalized_text:
+        raise ValueError("Text file must not be empty.")
+    return {
+        "text": normalized_text,
+        "lines": [
+            line.strip()
+            for line in normalized_text.splitlines()
+            if line.strip()
+        ],
+        "keywords": extract_keywords(normalized_text),
+        "scores": parse_scores(normalized_text),
+        "certifications": parse_certifications(normalized_text),
+        "source_type": "text",
+        "raw": {},
     }
 
 
@@ -331,6 +312,32 @@ def extract_spec_from_image(
     return parse_ocr_response(response)
 
 
+def extract_spec_from_file(
+    file_path: str | Path,
+    *,
+    invoke_url: str | None = None,
+    secret_key: str | None = None,
+    lang: str = "ko",
+) -> dict[str, Any]:
+    """Extract specs from TXT directly or OCR-supported files through CLOVA OCR."""
+
+    suffix = Path(file_path).suffix.lower()
+    if suffix in TEXT_FILE_SUFFIXES:
+        return parse_text_content(_read_text_file(file_path))
+    if suffix in OCR_FILE_SUFFIXES:
+        return extract_spec_from_image(
+            file_path,
+            invoke_url=invoke_url,
+            secret_key=secret_key,
+            lang=lang,
+        )
+    supported = ", ".join(sorted(TEXT_FILE_SUFFIXES | OCR_FILE_SUFFIXES))
+    raise ValueError(
+        f"Unsupported file extension: {suffix or '(none)'}. "
+        f"Supported extensions: {supported}"
+    )
+
+
 def extract_text_from_image(
     image_path: str | Path,
     *,
@@ -342,6 +349,23 @@ def extract_text_from_image(
 
     return extract_spec_from_image(
         image_path,
+        invoke_url=invoke_url,
+        secret_key=secret_key,
+        lang=lang,
+    )["text"]
+
+
+def extract_text_from_file(
+    file_path: str | Path,
+    *,
+    invoke_url: str | None = None,
+    secret_key: str | None = None,
+    lang: str = "ko",
+) -> str:
+    """Return text from TXT directly or an OCR-supported file."""
+
+    return extract_spec_from_file(
+        file_path,
         invoke_url=invoke_url,
         secret_key=secret_key,
         lang=lang,
