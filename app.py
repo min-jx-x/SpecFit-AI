@@ -1,5 +1,7 @@
-import streamlit as st
+import os
 import requests
+import streamlit as st
+from PIL import Image  # TIF, TIFF를 포함한 이미지 처리를 담당합니다.
 
 # 1. 페이지 설정 및 커스텀 CSS (흰 바탕 + 파란색 포인트)
 st.set_page_config(page_title="SpecGap AI", page_icon="🤖", layout="centered")
@@ -15,7 +17,6 @@ st.markdown("""
         div.stButton > button:first-child:hover { background-color: #004C99 !important; }
         h1, h2, h3 { color: #0066CC !important; }
         .stAlert { border-left: 5px solid #0066CC !important; }
-        /* 자기소개서 박스 스타일 */
         .cover-letter-box {
             background-color: #F8FAFC; padding: 20px; 
             border-radius: 8px; border: 1px solid #E2E8F0;
@@ -23,16 +24,14 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
+API_KEY = os.getenv("API_KEY", "specfit-secret-key")
+API_URL = "http://localhost:8000/api/analyze"
+
+
 
 # 2. 타이틀
 st.title("🤖 SpecGap AI 문서 분석기")
 st.markdown("지원 기업 및 직무 맞춤형 **역량 진단**부터 합격을 위한 **자기소개서 초안**까지 한 번에 확인하세요.")
-
-# 사이드바 설정
-with st.sidebar:
-    st.subheader("⚙️ API Configuration")
-    API_KEY = st.text_input("API Key", type="password", help="SpecGap AI API Key")
-    API_URL = "https://specgap.ai"
 
 # 3. 사용자 입력 섹션
 st.subheader("📋 지원 정보 입력")
@@ -42,14 +41,34 @@ with col1:
 with col2:
     job_position = st.text_input("💼 지원 직무", placeholder="예: 백엔드 개발자, 서비스 기획")
 
-# 4. 파일 업로드
-st.subheader("📁 내 문서 업로드 (기존 이력서 또는 이력 기술서)")
-uploaded_file = st.file_uploader("분석 및 자소서 변환을 할 서류를 첨부해 주세요.", type=["txt", "pdf", "docx"])
+# 4. 파일 업로드 (tif, tiff 형식 추가)
+st.subheader("📁 내 문서 및 이미지 업로드")
+uploaded_file = st.file_uploader(
+    "분석 및 자소서 변환을 할 서류를 첨부해 주세요. (문서 및 이미지 파일 지원)",
+    type=["txt", "pdf", "docx", "png", "jpg", "jpeg", "tif", "tiff"]
+)
 
-# 5. 분석 및 자소서 생성 로직 구동
+# 5. 파일 처리 및 시각화
 if uploaded_file is not None:
-    st.info(f"📂 파일이 준비되었습니다: {uploaded_file.name}")
+    # 파일 확장자 확인
+    file_extension = uploaded_file.name.split(".")[-1].lower()
 
+    # 이미지 파일 그룹 정의 (tif, tiff 포함)
+    image_extensions = ["png", "jpg", "jpeg", "tif", "tiff"]
+
+    # 이미지 파일일 경우 화면에 미리보기 출력
+    if file_extension in image_extensions:
+        st.info(f"📸 이미지 파일이 로드되었습니다: {uploaded_file.name}")
+        try:
+            image = Image.open(uploaded_file)
+            st.image(image, caption="업로드된 이미지 미리보기", use_container_width=True)
+        except Exception as e:
+            st.error(f"⚠️ 이미지를 화면에 표시하는 중 오류가 발생했습니다: {e}")
+            st.warning("화면 표시에는 실패했지만, API 분석 전송은 가능합니다.")
+    else:
+        st.info(f"📂 문서 파일이 정상적으로 로드되었습니다: {uploaded_file.name}")
+
+    # 6. 분석 및 자소서 생성 로직 구동
     if st.button("🚀 SpecGap AI 분석 및 자소서 추천"):
         if not API_KEY:
             st.error("좌측 사이드바에 API Key를 먼저 입력해 주세요.")
@@ -61,72 +80,93 @@ if uploaded_file is not None:
                     # 전송 데이터 구성
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}#:file = {"file":(파일의 이름, 파일의 실제 데이터, 파일 형식)}
                     data = {"company": company_name, "position": job_position}#data = {"company":지원 기업명,"position": 지원 직무}
-                    headers = {"Authorization": f"Bearer {API_KEY}"}#headers = {"Authorization": f"Bearer {API 인증키}"}
+                    headers = {
+                    "x-api-key": API_KEY, # :point_left: 백엔드가 읽는 헤더 명칭(x-api-key)으로 변경!
+                    "Accept": "application/json"
+                    }#headers = {"Authorization": f"Bearer {API 인증키}","Accept":json응답만 받음}
 
                     # API 요청
                     response = requests.post(API_URL, files=files, data=data, headers=headers, timeout=60)#서버 데이터 보낼 때 씀,(API_URL:FAST API 서버 링크, files=files, data=data, headers=headers, timeout=60:대기 제한 시간)
 
                     if response.status_code == 200:
-                        st.success("✅ 정밀 진단 및 자기소개서 작성이 완료되었습니다!")
-                        res = response.json()#반환 결과
+                        try:
+                            st.success("✅ 정밀 진단 및 자기소개서 작성이 완료되었습니다!")
+                            res = response.json()  # 백엔드 반환 결과 딕셔너리 전체
 
-                        # [결과 화면 렌더링]
-                        st.markdown("---")
-                        st.header("📊 SpecGap AI 종합 보고서")
-                        st.caption(f"**대상 기업**: {company_name} | **대상 직무**: {job_position}")
+                            # [결과 화면 렌더링 시작]
+                            st.markdown("---")
+                            st.header("📊 SpecGap AI 종합 보고서")
+                            st.caption(f"**대상 기업**: {company_name} | **대상 직무**: {job_position}")
 
-                        # 1. 부족한 점 vs 준비할 점 레이아웃
-                        col_gap, col_plan = st.columns(2)
-                        with col_gap:
-                            st.subheader("❌ 현재 부족한 역량 (Gap)")
-                            # 반환결과의 값 중 "gaps"키 값을 가져옵니다. 콤마(,)뒤에는 결과가 없을 때 기본값(현재 부족한 역량)
-                            gaps = res.get("gaps",
-                                           ["• 직무 핵심 기술 스택에 대한 구체적 성과 기재 부족", "• 해당 기업 인재상(도전정신 등)을 뒷받침할 에피소드 보완 필요"])
+                            # ----------------------------------------------------
+                            # 1. 유저 스펙 파싱 정보 (parsed_user_spec) 데이터 시각화
+                            # ----------------------------------------------------
+                            user_spec = res.get("parsed_user_spec", {})
 
-                            for gap in gaps:
-                                st.error(gap)
+                            st.subheader("🔍 추출된 내 스펙 분석 결과")
 
-                        with col_plan:
-                            st.subheader("💡 합격을 위한 준비 전략")
-                            # 반환결과의 값 중 "prepares"키 값을 가져옵니다. 콤마(,)뒤에는 결과가 없을 때 기본값(합격을 위한 전략)
-                            prepares = res.get("prepares",
-                                               ["• 프로젝트 내 본인의 기여도와 수치적 성과 중심 재구성", "• 기업의 최근 기술 블로그 비즈니스 방향성 연계 강조"])
+                            # (1) 유저의 키워드 (keywords) 가로 배치 태그 출력
+                            keywords = user_spec.get("keywords", [])
+                            if keywords:
+                                st.markdown("**핵심 역량 키워드**")
+                                st.write(" ".join([f"`{kw}`" for kw in keywords]))
 
-                            for prep in prepares:
-                                st.success(prep)
+                            # (2) 유저의 스코어 (scores) 메트릭(Metric) 형태로 출력
+                            scores = user_spec.get("scores", {})
+                            if scores:
+                                st.markdown("**부문별 역량 점수**")
+                                score_cols = st.columns(len(scores))  # 스코어 개수만큼 가로 칸 생성
+                                for col, (score_name, score_val) in zip(score_cols, scores.items()):
+                                    with col:
+                                        st.metric(label=score_name, value=f"{score_val}점")
 
-                        # 2. 종합 피드백 전문
-                        if "detailed_feedback" in res:
-                            st.subheader("📝 AI 종합 피드백")
-                            # 반환결과의 값 중 "detailed_feedback"키 값을 가져옵니다.(AI 종합 피드백)
-                            st.info(res["detailed_feedback"])
+                            # (3) 유저의 자격증 (certifications) 리스트 출력
+                            certifications = user_spec.get("certifications", [])
+                            if certifications:
+                                st.markdown("**보유 자격증 정보**")
+                                # 자격증들을 작은 블록 형태로 나열
+                                st.write(" ".join([f"🔒 :blue[{cert}]" for cert in certifications]))
 
-                        # 3. 추가된 파트: 맞춤형 자기소개서 추천 결과
-                        st.markdown("---")
-                        st.subheader("✍️ SpecGap AI 추천 자기소개서 (초안)")
-                        st.markdown(f"업로드한 문서와 {company_name}의 {job_position} 직무 핵심 역량을 결합하여 작성된 추천 자소서 문항입니다.")
+                            # ----------------------------------------------------
+                            # 2. 합격자 참고 개수 및 전체 분석 결과 출력
+                            # ----------------------------------------------------
+                            st.markdown("---")
+                            ref_count = res.get("retrieved_reference_count", 0)
+                            st.info(f"💡 이번 분석을 위해 시스템이 참고한 실제 합격자 데이터: **{ref_count}개**")
 
-                        # API 결과 내 'cover_letter' 필드가 있다고 가정 (없을 시 예시 템플릿 제공)
-                        default_letter = f"""[지원동기 및 포부: {company_name}의 기술 성장을 함께 이끌 원동력]
+                            st.subheader("📝 SpecGap AI 전반적 분석 리포트")
+                            analysis_report = res.get("analysis_report", "분석 결과 리포트를 불러올 수 없습니다.")
 
-기존에 진행했던 프로젝트에서 부족했던 역량을 {company_name}의 {job_position} 직무 환경 안에서 해결하고 기여하고자 지원했습니다. 저는 기존 서류에서 드러난 것 이상으로 시스템 최적화와 팀 협업에 강점을 가지고 있습니다. 
+                            # 백엔드에서 온 마크다운 기반의 전체 분석 결과(리포트 + 자소서 초안 포함) 출력
+                            st.markdown(analysis_report)
 
-{company_name}이 최근 집중하고 있는 비즈니스 방향성에 맞춰, 제가 가진 기술적 기반을 바탕으로 입사 후 부족한 실무 프로세스를 빠르게 체득하여 가시적인 성과를 내겠습니다."""
+                            # ----------------------------------------------------
+                            # 3. 영어 번역 정보 출력 (translated_english)
+                            # ----------------------------------------------------
+                            eng_data = res.get("translated_english", {})
+                            if eng_data:
+                                st.markdown("---")
+                                with st.expander("🌐 English Summary & Encouragement (영어 분석 및 격려)", expanded=False):
+                                    # 영어로 번역된 요약 분석 결과 (summary)
+                                    if eng_data.get("summary"):
+                                        st.markdown("**[English Summary]**")
+                                        st.info(eng_data.get("summary"))
 
-                        # 반환결과의 값 중"cover_letter"키 값을 가져옵니다. 콤마(,)뒤에는 결과가 없을 때 기본값(자소서 내용)
-                        cover_letter = res.get("cover_letter", default_letter)
+                                    # 영어로 번역된 격려 메시지 (encouragement)
+                                    if eng_data.get("encouragement"):
+                                        st.markdown("**[AI Message]**")
+                                        st.success(f"🍀 {eng_data.get('encouragement')}")
 
-                        # 텍스트 박스 형태로 이쁘게 출력
-                        st.markdown(f'<div class="cover-letter-box">{cover_letter}</div>', unsafe_allow_html=True)
-
-                        # 사용자가 바로 복사해서 쓸 수 있도록 복사 편의기능 제공
-                        st.text_area("📋 텍스트 복사용 칸 (수정 및 복사가 가능합니다)", value=cover_letter, height=200)
-
+                        except ValueError:  # JSONDecodeError 등을 포함하는 예외
+                            st.error("❌ 서버가 올바른 데이터(JSON)를 반환하지 않았습니다. 관리자에게 문의하세요.")
                     else:
                         st.error(f"❌ API 연결 오류 (코드: {response.status_code})")
                         st.text(response.text)
 
                 except requests.exceptions.Timeout:
-                    st.error("⏳ 서버 응답 시간이 초과되었습니다.")
-                except requests.exceptions.RequestException as e:
-                    st.error(f"🔌 네트워크 에러가 발생했습니다: {e}")
+                    st.error("⏳ 서버 응답 시간이 초과되었습니다. (60초 초과)")
+                except requests.exceptions.ConnectionError:
+                    st.error("🌐 API 서버에 연결할 수 없습니다. 서버가 켜져 있는지 확인해 주세요.")
+
+                except Exception as e:
+                    st.error(f"🔍 알 수 없는 에러가 발생했습니다: {e}")
