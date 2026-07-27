@@ -5,3 +5,6 @@ requests
 python-dotenv
 streamlit
 pydantic
+pillow
+plotly
+streamlit-float
