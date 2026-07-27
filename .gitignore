@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment Keys (보안)
+.env
+
+# Vector DB & Heavy Data
+chroma_db/
+data/*.csv
+
+# IDE
+.vscode/
+.idea/
