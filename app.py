@@ -208,7 +208,8 @@ kr_text=["지원 기업 및 직무 맞춤형 **역량 진단**부터 합격을 �
          "합격자 평균",
          "분석리포트",
          "개선 방안",
-         "결론"]
+         "결론",
+         "자기소개서"]
 en_text = [
     "Check everything at once, from **competency diagnosis** tailored to your target company and role, to a **draft cover letter** for passing.",
     "📋 Input Application Information",
@@ -243,6 +244,7 @@ en_text = [
     "Analysis Report",
     "Improvement Plan",
     "Conclusion",
+    "Cover Letter"
 ]
 text_source = en_text if st.session_state.button_text  == "한글" else kr_text
 st.title("SpecFit AI")
@@ -300,6 +302,7 @@ if uploaded_file is not None:
                             res = response.json()
                             if st.session_state.button_text == "한글":
                                 analysis_report = res.get("translated_english") or res.get("analysis_report")
+                                cover_letter=res.get("cover_letter")
                             else:
                                 analysis_report = res.get("analysis_report")
 
@@ -308,6 +311,7 @@ if uploaded_file is not None:
                                 analysis_report = None
                             else:
                                 st.success(f"{text_source[16]}")
+
                         except ValueError:
                             st.error(f"{text_source[17]}")
                     else:
@@ -319,6 +323,8 @@ if uploaded_file is not None:
 
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
                     st.warning(f"{text_source[20]}")
+                    analysis_report = MOCK_ANALYSIS_REPORT
+                    cover_letter=None
                 except Exception as e:
                     st.error(f"{text_source[21]} {e}")
 
@@ -434,3 +440,10 @@ if uploaded_file is not None:
                         <div class="size-normal" style="font-weight: 500; color: #1E40AF;">{analysis_report['encouragement']}</div>
                     </div>
                     """, unsafe_allow_html=True)
+
+                    st.markdown(f'<div class="size-large-bold">{text_source[33]}</div>', unsafe_allow_html=True)
+                    st.markdown(f"""
+                                            <div class="data-card" style="background-color: #F8FAFC; border-left: 4px solid #1E3A8A;">
+                                                <div class="size-normal" style="color: #334155;">{cover_letter}</div>
+                                            </div>
+                                            """, unsafe_allow_html=True)
