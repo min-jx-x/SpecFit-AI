@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from rag.build_rag import search_vector_db
 from services.clova_ocr import ClovaOcrError, extract_spec_from_file
-from services.llm_engine import analyze_spec_gap
+from services.llm_engine import analyze_spec_gap, generate_cover_letter
 from services.papago import (
     PapagoTranslationError,
     translate_analysis_report,
@@ -150,6 +150,17 @@ async def analyze_spec_endpoint(
         )
 
         try:
+            cover_letter_result = generate_cover_letter(
+                user_spec=formatted_user_spec,
+                company=company,
+                position=position,
+                gap_analysis=analysis_report,
+            )
+        except Exception as exc:
+            logger.warning("자기소개서 생성 실패: %s", exc)
+            cover_letter_result = "자기소개서 초안 생성에 실패했습니다."
+
+        try:
             english_report = translate_analysis_report(analysis_report)
         except (PapagoTranslationError, ValueError) as exc:
             logger.warning("Papago 전체 리포트 번역 실패: %s", exc)
@@ -165,6 +176,7 @@ async def analyze_spec_endpoint(
             },
             "retrieved_reference_count": len(retrieved_specs_list),
             "analysis_report": analysis_report,
+            "cover_letter": cover_letter_result,
             "translated_english": english_report,
         }
 
