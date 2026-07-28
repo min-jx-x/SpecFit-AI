@@ -4,6 +4,7 @@ import base64
 import io
 import mimetypes
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,7 @@ SUPPORTED_FILE_SUFFIXES = (
 
 TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
 TEXT_CHUNK_LIMIT = 3000
+TEXT_TRANSLATION_MAX_ATTEMPTS = 3
 MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024
 MAX_DOCUMENT_FILE_BYTES = 100 * 1024 * 1024
 MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
@@ -200,17 +202,32 @@ def translate_text(
     if resolved_glossary:
         payload["glossaryKey"] = resolved_glossary
 
-    try:
-        response = requests.post(
-            TEXT_TRANSLATION_URL,
-            headers=headers,
-            json=payload,
-            timeout=timeout,
-        )
-    except requests.RequestException as exc:
+    response: requests.Response | None = None
+    for attempt in range(TEXT_TRANSLATION_MAX_ATTEMPTS):
+        try:
+            response = requests.post(
+                TEXT_TRANSLATION_URL,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            if attempt == TEXT_TRANSLATION_MAX_ATTEMPTS - 1:
+                raise PapagoFileTranslationError(
+                    f"Papago TXT 번역 네트워크 오류: {exc}"
+                ) from exc
+            time.sleep(2**attempt)
+            continue
+
+        if response.status_code != 429 and response.status_code < 500:
+            break
+        if attempt < TEXT_TRANSLATION_MAX_ATTEMPTS - 1:
+            time.sleep(2**attempt)
+
+    if response is None:
         raise PapagoFileTranslationError(
-            f"Papago TXT 번역 네트워크 오류: {exc}"
-        ) from exc
+            "Papago TXT 번역 응답을 받지 못했습니다."
+        )
 
     result = _response_json(response, "Papago TXT 번역")
     translated = (
@@ -245,6 +262,7 @@ def translate_txt_file(
         raise ValueError("빈 TXT 파일은 번역할 수 없습니다.")
 
     translated_lines: list[str] = []
+    effective_source = "ko" if source == "auto" else source
     for raw_line in source_text.splitlines(keepends=True):
         body = raw_line.rstrip("\r\n")
         line_ending = raw_line[len(body):]
@@ -253,10 +271,16 @@ def translate_txt_file(
             translated_lines.append(raw_line)
             continue
 
+        # 날짜, 이메일, URL, 자격증명처럼 한국어가 없는 줄은
+        # 자동 언어 감지 오류를 피하기 위해 원문 그대로 유지합니다.
+        if source == "auto" and not re.search(r"[가-힣]", body):
+            translated_lines.append(raw_line)
+            continue
+
         translated_parts = [
             translate_text(
                 chunk,
-                source=source,
+                source=effective_source,
                 target=target,
                 client_id=client_id,
                 client_secret=client_secret,
@@ -265,18 +289,6 @@ def translate_txt_file(
             for chunk in _split_long_text(body, TEXT_CHUNK_LIMIT)
         ]
         translated_lines.append(" ".join(translated_parts) + line_ending)
-
-    if not source_text.endswith(("\n", "\r")) and not translated_lines:
-        translated_lines.append(
-            translate_text(
-                source_text,
-                source=source,
-                target=target,
-                client_id=client_id,
-                client_secret=client_secret,
-                glossary_key=glossary_key,
-            )
-        )
 
     translated_text = "".join(translated_lines)
     return TranslatedFile(
