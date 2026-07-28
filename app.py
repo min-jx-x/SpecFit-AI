@@ -4,12 +4,8 @@ import requests
 import streamlit as st
 import plotly.graph_objects as go
 from PIL import Image  # TIF, TIFF를 포함한 이미지 처리를 담당합니다.
-from streamlit_float import float_init, float_parent
-
 
 #streamlit run app.py
-
-float_init()
 
 # 1. 페이지 설정 및 커스텀 CSS (흰 바탕 + 파란색 포인트 및 커스텀 크기/카드 스타일 통합)
 st.set_page_config(page_title="SpecGap AI", page_icon="🤖", layout="centered")
@@ -55,9 +51,6 @@ st.markdown("""
         .summary-box { background-color: #F1F5F9; padding: 14px; border-radius: 6px; margin-bottom: 18px; font-weight: 500; }
     </style>
 """, unsafe_allow_html=True)
-
-
-
 
 API_KEY = os.getenv("API_KEY_CREDENTIAL", os.getenv("API_KEY", "specfit-secret-key"))
 API_URL = os.getenv("API_URL", "http://localhost:8000/api/analyze")
@@ -107,74 +100,6 @@ MOCK_ANALYSIS_REPORT = {
     'encouragement': '현재 보유한 기술과 경험은 훌륭하나, 목표 직무에 맞도록 약간의 기술적 보완이 필요합니다. 새로운 기술을 배우고 관련 프로젝트를 진행한다면 충분히 경쟁력을 갖출 수 있을 것입니다!'
 }
 
-EN_MOCK_ANALYSIS_REPORT = {
-  "target": {
-    "company": "NAVER",
-    "position": "Backend Developer"
-  },
-  "summary": "The user's current specifications demonstrate capabilities as a Data/AI Engineer. However, some technical supplements are required to transition into the target role of a Backend Developer.",
-  "quantitative_gaps": [
-    {
-      "item": "Language Test Score",
-      "user_value": "TOEFL 95 / TEPS 340",
-      "passed_avg": "None (No comparison group)",
-      "gap": "Incomparable due to lack of information",
-      "priority": "Medium",
-      "comment": "In general, language scores may not be a mandatory requirement for IT companies, but they can be considered important in global companies."
-    },
-    {
-      "item": "Relevant Certifications",
-      "user_value": "ADsP, SQLD, Information Security Engineer",
-      "passed_avg": "None (No comparison group)",
-      "gap": "Incomparable due to lack of information",
-      "priority": "Medium",
-      "comment": "The currently held certifications are focused on data analysis and security. Acquiring certifications required for backend development (e.g., AWS, Azure certifications, etc.) may be necessary."
-    }
-  ],
-  "qualitative_gaps": [
-    {
-      "category": "Tech Stack Alignment",
-      "analysis": "The user mainly possesses technologies related to data analysis and machine learning. Technologies required for backend development, such as Java and Spring, are not mentioned.",
-      "suggestion": "Expand your experience by learning frameworks or languages frequently used in backend development (Java, Spring, etc.) and reflecting them in your portfolio."
-    },
-    {
-      "category": "Actual Project Experience",
-      "analysis": "The user has conducted various projects, but no projects directly related to backend development are observed.",
-      "suggestion": "Gain practical experience by undertaking additional backend-related projects, such as RESTful API design and implementation, and database optimization."
-    }
-  ],
-  "priority_actions": [
-    {
-      "rank": 1,
-      "action": "Start learning Java and Spring Framework",
-      "reason": "Java and Spring are highly critical technologies in backend development. Learning them will broaden your technical scope.",
-      "expected_effect": "It will increase the possibility of transitioning to the target job and strengthen your ability to respond to questions during interviews."
-    }
-  ],
-  "Fit_score": "60 points",
-  "encouragement": "Your current skills and experiences are excellent, but a slight technical supplement is needed to align with the target role. If you learn new technologies and conduct relevant projects, you will surely be competitive enough!"
-}
-
-if "button_text" not in st.session_state:
-    st.session_state.button_text = "English"
-
-# 3. 우측 하단 고정 버튼 영역
-button_container = st.container()
-with button_container:
-    # 💡 버튼의 라벨에 세션 상태 변수를 그대로 넣어줍니다.
-    if st.button(st.session_state.button_text, key="floating_btn", type="primary"):
-        # 버튼이 클릭될 때마다 글자를 교체 (토글)
-        if st.session_state.button_text == "한글":
-            st.session_state.button_text = "English"
-        else:
-            st.session_state.button_text = "한글"
-
-        # 글자 변경을 화면에 즉시 반영하기 위해 새로고침
-        st.rerun()
-
-    # 우측 하단 고정 CSS 적용
-    float_parent(css="position: fixed; bottom: 30px; right: 30px; z-index: 9999;")
-
 # 2. 타이틀
 kr_text=["지원 기업 및 직무 맞춤형 **역량 진단**부터 합격을 위한 **자기소개서 초안**까지 한 번에 확인하세요.",
          "📋 지원 정보 입력",
@@ -210,43 +135,8 @@ kr_text=["지원 기업 및 직무 맞춤형 **역량 진단**부터 합격을 �
          "개선 방안",
          "결론",
          "자기소개서"]
-en_text = [
-    "Check everything at once, from **competency diagnosis** tailored to your target company and role, to a **draft cover letter** for passing.",
-    "📋 Input Application Information",
-    "🎯 Target Company Name",
-    "e.g., Naver, Kakao",
-    "💼 Target Job/Role",
-    "e.g., Backend Developer, Service Planning",
-    "📁 Upload My Documents & Images",
-    "Please attach the documents to be analyzed and converted into a cover letter. (Supports document and image files)",
-    "📸 Image file has been loaded: ",
-    "Preview Uploaded Image",
-    "⚠️ An error occurred while displaying the image on the screen: ",
-    "Display failed, but transmission for API analysis is still possible.",
-    "📂 Document file has been loaded successfully:",
-    "🚀 SpecFit AI Analysis & Cover Letter Recommendation",
-    "You must enter both the target company and role to get an accurate, tailored cover letter.",
-    "Analyzing and writing your tailored cover letter...",
-    "✅ API precision diagnosis and cover letter generation completed!",
-    "❌ The server did not return valid data (JSON).",
-    "⚠️ API Server Error (Code: ",
-    "). Loading local sample data.",
-    "🌐 Unable to connect to the API server or connection timed out. Loading existing report data for testing.",
-    "🔍 An unknown error has occurred: ",
-    "Company",
-    "Position",
-    "Score",
-    "Score",
-    "Spec Comparison",
-    "Priority",
-    "User",
-    "Accepted Applicants Average",
-    "Analysis Report",
-    "Improvement Plan",
-    "Conclusion",
-    "Cover Letter"
-]
-text_source = en_text if st.session_state.button_text  == "한글" else kr_text
+
+text_source = kr_text
 st.title("SpecFit AI")
 st.markdown(f"{text_source[0]}")
 
@@ -301,12 +191,9 @@ if uploaded_file is not None:
                     if response.status_code == 200:
                         try:
                             res = response.json()
-                            if st.session_state.button_text == "한글":
-                                analysis_report = res.get("translated_english") or res.get("analysis_report")
-                                cover_letter=res.get("cover_letter")
-                            else:
-                                analysis_report = res.get("analysis_report")
-                                cover_letter = res.get("cover_letter")
+                            analysis_report = res.get("analysis_report")
+                            cover_letter = res.get("cover_letter")
+
 
                             if not isinstance(analysis_report, dict) or not analysis_report.get("summary"):
                                 st.error(f"{text_source[17]}")
@@ -326,6 +213,7 @@ if uploaded_file is not None:
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
                     st.warning(f"{text_source[20]}")
                     analysis_report = MOCK_ANALYSIS_REPORT
+
 
                 except Exception as e:
                     st.error(f"{text_source[21]} {e}")
