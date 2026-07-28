@@ -59,8 +59,8 @@ st.markdown("""
 
 
 
-API_KEY = os.getenv("API_KEY", "specfit-secret-key")
-API_URL = "http://localhost:8000/api/analyze"
+API_KEY = os.getenv("API_KEY_CREDENTIAL", os.getenv("API_KEY", "specfit-secret-key"))
+API_URL = os.getenv("API_URL", "http://localhost:8000/api/analyze")
 
 MOCK_ANALYSIS_REPORT = {
     'target': {'company': '네이버', 'position': '백엔드 개발자'},
@@ -290,29 +290,37 @@ if uploaded_file is not None:
                     # 전송 데이터 구성
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
                     data = {"company": company_name, "position": job_position}
-                    headers = {"Authorization": f"Bearer {API_KEY}"}
+                    headers = {"x-api-key": API_KEY}
 
                     # API 요청
-                    response = requests.post(API_URL, files=files, data=data, headers=headers, timeout=60)
+                    response = requests.post(API_URL, files=files, data=data, headers=headers, timeout=120)
 
                     if response.status_code == 200:
                         try:
                             res = response.json()
-                            analysis_report = res.get("english_report") if st.session_state.button_text == "한글" else res.get("analysis_report")
-                            st.success(f"{text_source[16]}")
+                            if st.session_state.button_text == "한글":
+                                analysis_report = res.get("translated_english") or res.get("analysis_report")
+                            else:
+                                analysis_report = res.get("analysis_report")
+
+                            if not isinstance(analysis_report, dict) or not analysis_report.get("summary"):
+                                st.error(f"{text_source[17]}")
+                                analysis_report = None
+                            else:
+                                st.success(f"{text_source[16]}")
                         except ValueError:
                             st.error(f"{text_source[17]}")
                     else:
-                        st.warning(f"{text_source[18]}{response.status_code}).{text_source[19]}")
-                        analysis_report = EN_MOCK_ANALYSIS_REPORT if st.session_state.button_text == "한글" else MOCK_ANALYSIS_REPORT
+                        error_detail = response.text[:200]
+                        st.warning(
+                            f"{text_source[18]}{response.status_code}). "
+                            f"{error_detail or text_source[19]}"
+                        )
 
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
                     st.warning(f"{text_source[20]}")
-                    # 연결 실패 시 백업용 더미 데이터를 변수에 바인딩
-                    analysis_report = EN_MOCK_ANALYSIS_REPORT if st.session_state.button_text == "한글" else MOCK_ANALYSIS_REPORT
                 except Exception as e:
                     st.error(f"{text_source[21]} {e}")
-                    analysis_report = EN_MOCK_ANALYSIS_REPORT if st.session_state.button_text == "한글" else MOCK_ANALYSIS_REPORT
 
                 if isinstance(analysis_report, dict):
                     company = analysis_report['target']['company']

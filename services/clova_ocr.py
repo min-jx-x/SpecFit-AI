@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import os
 import re
@@ -19,7 +20,7 @@ load_dotenv()
 OCR_INVOKE_URL_ENV = ("NCP_CLOVA_OCR_INVOKE_URL", "CLOVA_OCR_INVOKE_URL")
 OCR_SECRET_ENV = ("NCP_CLOVA_OCR_SECRET", "CLOVA_OCR_SECRET")
 OCR_FILE_SUFFIXES = {".jpg", ".jpeg", ".png", ".pdf", ".tif", ".tiff"}
-TEXT_FILE_SUFFIXES = {".txt"}
+TEXT_FILE_SUFFIXES = {".txt", ".json"}
 TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
 
 DEFAULT_TECH_KEYWORDS = {
@@ -172,6 +173,93 @@ def request_ocr(
     return response.json()
 
 
+STRUCTURED_FIELD_LABELS = (
+    "학점",
+    "토익",
+    "토익스피킹",
+    "OPIC",
+    "자격증",
+    "인턴",
+    "수상내역",
+    "교내 사회 봉사",
+    "직무",
+)
+
+
+def extract_structured_fields(ocr_response: dict[str, Any]) -> dict[str, str]:
+    """Parse named fields from CLOVA OCR custom-template JSON."""
+
+    field_map: dict[str, str] = {}
+    for image in ocr_response.get("images", []):
+        for field in image.get("fields", []):
+            name = (field.get("name") or "").strip()
+            value = (field.get("inferText") or "").strip()
+            if name and value:
+                field_map[name] = value
+    return field_map
+
+
+def _parse_numeric_score(raw_value: str) -> int | None:
+    match = re.search(r"(\d{2,3})", raw_value)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def parse_structured_spec(
+    field_map: dict[str, str],
+    fallback_text: str = "",
+) -> dict[str, Any]:
+    """Build parsed spec data from CLOVA custom-template field names."""
+
+    scores: dict[str, int | str] = {}
+    score_field_map = {
+        "toeic": "토익",
+        "toefl": "토플",
+        "teps": "텝스",
+        "toeic_speaking": "토익스피킹",
+    }
+    for score_key, field_name in score_field_map.items():
+        raw_value = field_map.get(field_name, "")
+        if raw_value:
+            parsed = _parse_numeric_score(raw_value)
+            if parsed is not None:
+                scores[score_key] = parsed
+
+    opic_value = field_map.get("OPIC", "").strip()
+    if opic_value:
+        scores["opic"] = opic_value
+
+    cert_raw = field_map.get("자격증", "").strip()
+    certifications = [
+        part.strip()
+        for part in re.split(r"[,/|·\n]", cert_raw)
+        if part.strip()
+    ] if cert_raw else []
+
+    lines = []
+    for label in STRUCTURED_FIELD_LABELS:
+        value = field_map.get(label)
+        if value:
+            lines.append(f"- {label}: {value}")
+
+    structured_text = "\n".join(lines).strip()
+    text = structured_text or fallback_text
+
+    keywords = extract_keywords(text)
+    if not keywords.get("certificate") and certifications:
+        keywords["certificate"] = sorted(set(certifications), key=str.lower)
+
+    return {
+        "text": text,
+        "lines": [line for line in lines if line],
+        "keywords": keywords,
+        "scores": scores,
+        "certifications": certifications or parse_certifications(text),
+        "structured_fields": field_map,
+    }
+
+
 def extract_lines(ocr_response: dict[str, Any]) -> list[str]:
     """Extract line-like text from CLOVA OCR response fields."""
 
@@ -232,19 +320,21 @@ def extract_keywords(
     return found
 
 
-def parse_scores(text: str) -> dict[str, int]:
+def parse_scores(text: str) -> dict[str, int | str]:
     """Parse common language-test scores from OCR text."""
 
     patterns = {
         "toeic": r"(?:TOEIC|토익)\D{0,20}([0-9]{3})",
         "toefl": r"(?:TOEFL|토플)\D{0,20}([0-9]{2,3})",
         "teps": r"(?:TEPS|텝스)\D{0,20}([0-9]{3})",
+        "opic": r"(?:OPIc|OPIC|오픽)\D{0,20}(AL|IH|IM3|IM2|IM1|IL)",
     }
-    scores: dict[str, int] = {}
+    scores: dict[str, int | str] = {}
     for name, pattern in patterns.items():
         match = re.search(pattern, text, re.I)
         if match:
-            scores[name] = int(match.group(1))
+            value = match.group(1)
+            scores[name] = int(value) if value.isdigit() else value
     return scores
 
 
@@ -261,16 +351,35 @@ def parse_certifications(text: str) -> list[str]:
 def parse_ocr_response(ocr_response: dict[str, Any]) -> dict[str, Any]:
     """Create a SpecGap-friendly parsed result from raw CLOVA OCR output."""
 
-    text = extract_text(ocr_response)
+    fallback_text = extract_text(ocr_response)
+    field_map = extract_structured_fields(ocr_response)
+
+    if field_map:
+        parsed = parse_structured_spec(field_map, fallback_text=fallback_text)
+        return {
+            **parsed,
+            "source_type": "ocr_template",
+            "raw": ocr_response,
+        }
+
     return {
-        "text": text,
+        "text": fallback_text,
         "lines": extract_lines(ocr_response),
-        "keywords": extract_keywords(text),
-        "scores": parse_scores(text),
-        "certifications": parse_certifications(text),
+        "keywords": extract_keywords(fallback_text),
+        "scores": parse_scores(fallback_text),
+        "certifications": parse_certifications(fallback_text),
+        "structured_fields": {},
         "source_type": "ocr",
         "raw": ocr_response,
     }
+
+
+def parse_ocr_json_content(ocr_response: dict[str, Any]) -> dict[str, Any]:
+    """Parse a saved CLOVA OCR JSON response file."""
+
+    if not ocr_response.get("images"):
+        raise ValueError("OCR JSON must contain an 'images' array.")
+    return parse_ocr_response(ocr_response)
 
 
 def parse_text_content(text: str) -> dict[str, Any]:
@@ -279,6 +388,16 @@ def parse_text_content(text: str) -> dict[str, Any]:
     normalized_text = text.strip()
     if not normalized_text:
         raise ValueError("Text file must not be empty.")
+
+    stripped = normalized_text.lstrip()
+    if stripped.startswith("{"):
+        try:
+            payload = json.loads(normalized_text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("images"):
+            return parse_ocr_json_content(payload)
+
     return {
         "text": normalized_text,
         "lines": [
@@ -289,6 +408,7 @@ def parse_text_content(text: str) -> dict[str, Any]:
         "keywords": extract_keywords(normalized_text),
         "scores": parse_scores(normalized_text),
         "certifications": parse_certifications(normalized_text),
+        "structured_fields": {},
         "source_type": "text",
         "raw": {},
     }
@@ -312,6 +432,19 @@ def extract_spec_from_image(
     return parse_ocr_response(response)
 
 
+def _read_json_file(json_path: str | Path) -> dict[str, Any]:
+    path = Path(json_path)
+    for encoding in TEXT_ENCODINGS:
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    raise ValueError(
+        f"Unable to decode OCR JSON file: {json_path}. "
+        f"Supported encodings: {', '.join(TEXT_ENCODINGS)}"
+    )
+
+
 def extract_spec_from_file(
     file_path: str | Path,
     *,
@@ -322,6 +455,8 @@ def extract_spec_from_file(
     """Extract specs from TXT directly or OCR-supported files through CLOVA OCR."""
 
     suffix = Path(file_path).suffix.lower()
+    if suffix == ".json":
+        return parse_ocr_json_content(_read_json_file(file_path))
     if suffix in TEXT_FILE_SUFFIXES:
         return parse_text_content(_read_text_file(file_path))
     if suffix in OCR_FILE_SUFFIXES:

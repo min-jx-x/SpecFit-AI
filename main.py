@@ -2,9 +2,14 @@ import json
 import logging
 import os
 import tempfile
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,13 +22,11 @@ from services.papago import (
 )
 
 
-load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SpecFit-Main")
 
 ALLOWED_FILE_SUFFIXES = {
-    ".txt", ".jpg", ".jpeg", ".png", ".pdf", ".tif", ".tiff"
+    ".txt", ".json", ".jpg", ".jpeg", ".png", ".pdf", ".tif", ".tiff"
 }
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
@@ -102,7 +105,20 @@ async def analyze_spec_endpoint(
         extracted_keywords = extraction_result.get("keywords", {})
         extracted_scores = extraction_result.get("scores", {})
         extracted_certs = extraction_result.get("certifications", [])
+        structured_fields = extraction_result.get("structured_fields", {})
         source_type = extraction_result.get("source_type", "unknown")
+
+        if not extracted_text.strip():
+            logger.warning(
+                "[File/OCR] 추출된 텍스트가 비어 있습니다. OCR 응답 또는 파일 내용을 확인하세요."
+            )
+        else:
+            logger.info(
+                "[File/OCR] 추출 완료 (source=%s, chars=%d, fields=%d)",
+                source_type,
+                len(extracted_text),
+                len(structured_fields),
+            )
 
         formatted_user_spec = f"""
 [추출된 전체 서류 텍스트]
@@ -170,6 +186,8 @@ async def analyze_spec_endpoint(
             "status": "success",
             "parsed_user_spec": {
                 "source_type": source_type,
+                "extracted_text": extracted_text,
+                "structured_fields": structured_fields,
                 "keywords": extracted_keywords,
                 "scores": extracted_scores,
                 "certifications": extracted_certs,
