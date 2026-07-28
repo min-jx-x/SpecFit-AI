@@ -1,17 +1,30 @@
 from __future__ import annotations
 
+import base64
+import io
+import mimetypes
 import os
-import re
+import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from PIL import Image
 
 
 load_dotenv()
 
 
-PAPAGO_TRANSLATION_URL = "https://papago.apigw.ntruss.com/nmt/v1/translation"
+TEXT_TRANSLATION_URL = "https://papago.apigw.ntruss.com/nmt/v1/translation"
+DOC_TRANSLATE_URL = "https://papago.apigw.ntruss.com/doc-trans/v1/translate"
+DOC_STATUS_URL = "https://papago.apigw.ntruss.com/doc-trans/v1/status"
+DOC_DOWNLOAD_URL = "https://papago.apigw.ntruss.com/doc-trans/v1/download"
+IMAGE_TRANSLATION_URL = (
+    "https://papago.apigw.ntruss.com/image-to-image/v1/translate"
+)
+
 PAPAGO_CLIENT_ID_ENV = ("NCP_PAPAGO_CLIENT_ID", "PAPAGO_CLIENT_ID")
 PAPAGO_CLIENT_SECRET_ENV = (
     "NCP_PAPAGO_CLIENT_SECRET",
@@ -22,63 +35,30 @@ PAPAGO_GLOSSARY_KEY_ENV = (
     "PAPAGO_GLOSSARY_KEY",
 )
 
-TRANSLATABLE_REPORT_KEYS = {
-    "summary",
-    "item",
-    "category",
-    "position",
-    "user_value",
-    "passed_avg",
-    "gap",
-    "priority",
-    "comment",
-    "analysis",
-    "suggestion",
-    "action",
-    "reason",
-    "expected_effect",
-    "encouragement",
-    "cover_letter",
-}
+TEXT_FILE_SUFFIXES = {".txt"}
+DOCUMENT_FILE_SUFFIXES = {".docx", ".pptx", ".xlsx", ".pdf", ".hwp"}
+IMAGE_FILE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+SUPPORTED_FILE_SUFFIXES = (
+    TEXT_FILE_SUFFIXES | DOCUMENT_FILE_SUFFIXES | IMAGE_FILE_SUFFIXES
+)
 
-BATCH_MARKER = "[[SPECGAP_FIELD_{index:04d}]]"
-DEFAULT_BATCH_CHAR_LIMIT = 3000
-
-RESUME_TERM_REPLACEMENTS = {
-    "self-introduction letter": "cover letter",
-    "personal statement": "cover letter",
-    "career description": "professional experience",
-    "contest exhibition": "competition",
-    "external activity": "extracurricular activity",
-    "club activities": "student club activities",
-    "certificate": "certification",
-    "information processing engineer": "Engineer Information Processing",
-    "SQL developer": "SQL Developer (SQLD)",
-    "Computer Specialist in Spreadsheet & Database": (
-        "Computer Specialist in Spreadsheet and Database"
-    ),
-}
-
-KOREAN_RESUME_TERMS = {
-    "자기소개서": "cover letter",
-    "자소서": "cover letter",
-    "이력서": "resume",
-    "레쥬메": "resume",
-    "스펙": "qualifications",
-    "경력기술서": "professional experience summary",
-    "대외활동": "extracurricular activities",
-    "공모전": "competition",
-    "동아리": "student club",
-    "정보처리기사": "Engineer Information Processing",
-    "SQLD": "SQL Developer (SQLD)",
-    "에스큐엘디": "SQL Developer (SQLD)",
-    "토익": "TOEIC",
-    "오픽": "OPIc",
-}
+TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
+TEXT_CHUNK_LIMIT = 3000
+MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024
+MAX_DOCUMENT_FILE_BYTES = 100 * 1024 * 1024
+MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024
 
 
-class PapagoTranslationError(RuntimeError):
-    """Raised when NCP Papago returns an error response."""
+class PapagoFileTranslationError(RuntimeError):
+    """Raised when Papago cannot translate or return an uploaded file."""
+
+
+@dataclass(frozen=True)
+class TranslatedFile:
+    content: bytes
+    filename: str
+    media_type: str
+    source_type: str
 
 
 def _first_env(names: tuple[str, ...]) -> str | None:
@@ -98,95 +78,117 @@ def _resolve_credentials(
 
     if not resolved_id:
         raise ValueError(
-            "Papago Client ID is required. Set NCP_PAPAGO_CLIENT_ID "
-            "or pass client_id."
+            "NCP_PAPAGO_CLIENT_ID 또는 PAPAGO_CLIENT_ID가 필요합니다."
         )
     if not resolved_secret:
         raise ValueError(
-            "Papago Client Secret is required. "
-            "Set NCP_PAPAGO_CLIENT_SECRET or pass client_secret."
+            "NCP_PAPAGO_CLIENT_SECRET 또는 PAPAGO_CLIENT_SECRET이 필요합니다."
         )
     return resolved_id, resolved_secret
 
 
-def _mask_resume_terms(text: str) -> str:
-    """Keep common resume/JD terms in standard English during translation."""
+def _auth_headers(
+    client_id: str | None = None,
+    client_secret: str | None = None,
+) -> dict[str, str]:
+    resolved_id, resolved_secret = _resolve_credentials(
+        client_id,
+        client_secret,
+    )
+    return {
+        "X-NCP-APIGW-API-KEY-ID": resolved_id,
+        "X-NCP-APIGW-API-KEY": resolved_secret,
+    }
 
-    masked = text
-    for korean, english in KOREAN_RESUME_TERMS.items():
-        masked = re.sub(
-            re.escape(korean),
-            f'<span translate="no">{english}</span>',
-            masked,
-            flags=re.I,
+
+def _response_error(response: requests.Response, action: str) -> None:
+    try:
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        body = response.text[:1000] if response.text else ""
+        raise PapagoFileTranslationError(
+            f"{action} 실패: HTTP {response.status_code} {body}"
+        ) from exc
+
+
+def _response_json(
+    response: requests.Response,
+    action: str,
+) -> dict[str, Any]:
+    _response_error(response, action)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise PapagoFileTranslationError(
+            f"{action} 응답이 JSON 형식이 아닙니다."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PapagoFileTranslationError(
+            f"{action} 응답 형식이 올바르지 않습니다."
         )
-    return masked
+    return payload
 
 
-def _contains_korean(text: str) -> bool:
-    """Return whether text contains at least one Hangul syllable."""
+def _translated_filename(filename: str, target: str) -> str:
+    safe_name = Path(filename).name
+    path = Path(safe_name)
+    return f"{path.stem}_{target}{path.suffix.lower()}"
 
-    return bool(re.search(r"[가-힣]", text))
 
-
-def normalize_resume_english(text: str) -> str:
-    """Normalize common awkward Papago outputs into resume-friendly wording."""
-
-    normalized = text
-    for source, target in RESUME_TERM_REPLACEMENTS.items():
-        normalized = re.sub(re.escape(source), target, normalized, flags=re.I)
-    normalized = re.sub(
-        r"\bspecifications?\b",
-        "qualifications",
-        normalized,
-        flags=re.I,
+def _decode_text_file(content: bytes) -> str:
+    for encoding in TEXT_ENCODINGS:
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(
+        "TXT 파일 인코딩을 읽을 수 없습니다. UTF-8 또는 CP949를 사용하세요."
     )
-    normalized = re.sub(
-        r"\bspecs\b",
-        "qualifications",
-        normalized,
-        flags=re.I,
-    )
-    normalized = re.sub(
-        r"\bspec\b",
-        "qualification",
-        normalized,
-        flags=re.I,
-    )
-    normalized = re.sub(r"\bresume\b", "resume", normalized, flags=re.I)
-    normalized = re.sub(
-        r'</?span(?:\s+translate="no")?>',
-        "",
-        normalized,
-        flags=re.I,
-    )
-    normalized = re.sub(r"\s+", " ", normalized)
-    return normalized.strip()
+
+
+def _split_long_text(text: str, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining)
+            break
+
+        split_at = max(
+            remaining.rfind(" ", 0, max_chars),
+            remaining.rfind(".", 0, max_chars),
+            remaining.rfind(",", 0, max_chars),
+        )
+        if split_at < max_chars // 2:
+            split_at = max_chars
+        else:
+            split_at += 1
+
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return chunks
 
 
 def translate_text(
     text: str,
     *,
-    source: str = "ko",
+    source: str = "auto",
     target: str = "en",
     client_id: str | None = None,
     client_secret: str | None = None,
     glossary_key: str | None = None,
-    honorific: bool | None = None,
     timeout: int = 30,
-) -> dict[str, Any]:
-    """Call NCP Papago Text Translation and return the raw JSON response."""
+) -> str:
+    """Translate one text chunk and return only translatedText."""
 
     if not text or not text.strip():
-        raise ValueError("text must not be empty.")
+        return text
 
-    resolved_id, resolved_secret = _resolve_credentials(
-        client_id,
-        client_secret,
-    )
     headers = {
-        "X-NCP-APIGW-API-KEY-ID": resolved_id,
-        "X-NCP-APIGW-API-KEY": resolved_secret,
+        **_auth_headers(client_id, client_secret),
         "Content-Type": "application/json",
     }
     payload: dict[str, Any] = {
@@ -194,290 +196,416 @@ def translate_text(
         "target": target,
         "text": text,
     }
-    resolved_glossary_key = (
-        glossary_key or _first_env(PAPAGO_GLOSSARY_KEY_ENV)
-    )
-    if resolved_glossary_key:
-        payload["glossaryKey"] = resolved_glossary_key
-    if honorific is not None:
-        payload["honorific"] = honorific
+    resolved_glossary = glossary_key or _first_env(PAPAGO_GLOSSARY_KEY_ENV)
+    if resolved_glossary:
+        payload["glossaryKey"] = resolved_glossary
 
     try:
         response = requests.post(
-            PAPAGO_TRANSLATION_URL,
+            TEXT_TRANSLATION_URL,
             headers=headers,
             json=payload,
             timeout=timeout,
         )
-        response.raise_for_status()
     except requests.RequestException as exc:
-        response_body = ""
-        if exc.response is not None:
-            response_body = exc.response.text
-        raise PapagoTranslationError(
-            f"Papago translation request failed: {response_body or exc}"
+        raise PapagoFileTranslationError(
+            f"Papago TXT 번역 네트워크 오류: {exc}"
         ) from exc
 
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise PapagoTranslationError(
-            "Papago returned a non-JSON response."
-        ) from exc
-
-
-def get_translated_text(papago_response: dict[str, Any]) -> str:
-    """Extract translatedText from Papago response JSON."""
-
+    result = _response_json(response, "Papago TXT 번역")
     translated = (
-        papago_response.get("message", {})
+        result.get("message", {})
         .get("result", {})
         .get("translatedText", "")
-        .strip()
     )
-    if not translated:
-        raise PapagoTranslationError(
-            "Papago response does not contain translatedText."
+    if not isinstance(translated, str) or not translated.strip():
+        raise PapagoFileTranslationError(
+            "Papago TXT 번역 응답에 translatedText가 없습니다."
         )
     return translated
 
 
-def translate_to_resume_english(
-    korean_text: str,
+def translate_txt_file(
+    content: bytes,
+    filename: str,
     *,
-    client_id: str | None = None,
-    client_secret: str | None = None,
-    glossary_key: str | None = None,
-    use_term_masking: bool = True,
-) -> str:
-    """Translate Korean text into resume-friendly English."""
-
-    if not _contains_korean(korean_text):
-        return normalize_resume_english(korean_text)
-
-    source_text = (
-        _mask_resume_terms(korean_text)
-        if use_term_masking
-        else korean_text
-    )
-    response = translate_text(
-        source_text,
-        source="ko",
-        target="en",
-        client_id=client_id,
-        client_secret=client_secret,
-        glossary_key=glossary_key,
-    )
-    translated = get_translated_text(response)
-    return normalize_resume_english(translated)
-
-
-def translate_spec_text(
-    text: str,
-    *,
+    source: str = "auto",
     target: str = "en",
-    source: str = "ko",
     client_id: str | None = None,
     client_secret: str | None = None,
     glossary_key: str | None = None,
-) -> str:
-    """Translate generic SpecGap text and return only the translated string."""
+) -> TranslatedFile:
+    """Translate TXT while preserving the original number of lines."""
 
-    response = translate_text(
-        text,
+    if len(content) > MAX_TEXT_FILE_BYTES:
+        raise ValueError("TXT 파일은 5MB 이하여야 합니다.")
+
+    source_text = _decode_text_file(content)
+    if not source_text.strip():
+        raise ValueError("빈 TXT 파일은 번역할 수 없습니다.")
+
+    translated_lines: list[str] = []
+    for raw_line in source_text.splitlines(keepends=True):
+        body = raw_line.rstrip("\r\n")
+        line_ending = raw_line[len(body):]
+
+        if not body.strip():
+            translated_lines.append(raw_line)
+            continue
+
+        translated_parts = [
+            translate_text(
+                chunk,
+                source=source,
+                target=target,
+                client_id=client_id,
+                client_secret=client_secret,
+                glossary_key=glossary_key,
+            )
+            for chunk in _split_long_text(body, TEXT_CHUNK_LIMIT)
+        ]
+        translated_lines.append(" ".join(translated_parts) + line_ending)
+
+    if not source_text.endswith(("\n", "\r")) and not translated_lines:
+        translated_lines.append(
+            translate_text(
+                source_text,
+                source=source,
+                target=target,
+                client_id=client_id,
+                client_secret=client_secret,
+                glossary_key=glossary_key,
+            )
+        )
+
+    translated_text = "".join(translated_lines)
+    return TranslatedFile(
+        content=translated_text.encode("utf-8"),
+        filename=_translated_filename(filename, target),
+        media_type="text/plain; charset=utf-8",
+        source_type="text",
+    )
+
+
+def _request_document_translation(
+    content: bytes,
+    filename: str,
+    *,
+    source: str,
+    target: str,
+    client_id: str | None,
+    client_secret: str | None,
+    glossary_key: str | None,
+    timeout: int,
+) -> str:
+    headers = _auth_headers(client_id, client_secret)
+    data: dict[str, str] = {
+        "source": source,
+        "target": target,
+    }
+    resolved_glossary = glossary_key or _first_env(PAPAGO_GLOSSARY_KEY_ENV)
+    if resolved_glossary:
+        data["glossaryKey"] = resolved_glossary
+
+    upload_name = Path(filename).name
+    media_type = mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
+    files = {"file": (upload_name, content, media_type)}
+
+    try:
+        response = requests.post(
+            DOC_TRANSLATE_URL,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise PapagoFileTranslationError(
+            f"Papago 문서 번역 요청 네트워크 오류: {exc}"
+        ) from exc
+
+    payload = _response_json(response, "Papago 문서 번역 요청")
+    request_id = payload.get("data", {}).get("requestId")
+    if not isinstance(request_id, str) or not request_id:
+        raise PapagoFileTranslationError(
+            "Papago 문서 번역 응답에 requestId가 없습니다."
+        )
+    return request_id
+
+
+def _wait_for_document(
+    request_id: str,
+    *,
+    client_id: str | None,
+    client_secret: str | None,
+    wait_timeout: int,
+    poll_interval: float,
+) -> None:
+    headers = _auth_headers(client_id, client_secret)
+    deadline = time.monotonic() + wait_timeout
+
+    while time.monotonic() < deadline:
+        try:
+            response = requests.get(
+                DOC_STATUS_URL,
+                headers=headers,
+                params={"requestId": request_id},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise PapagoFileTranslationError(
+                f"Papago 문서 상태 확인 네트워크 오류: {exc}"
+            ) from exc
+
+        payload = _response_json(response, "Papago 문서 상태 확인")
+        data = payload.get("data", {})
+        status = data.get("status")
+
+        if status == "COMPLETE":
+            return
+        if status == "FAILED":
+            raise PapagoFileTranslationError(
+                "Papago 문서 번역 실패: "
+                f"{data.get('errCode', '')} {data.get('errMsg', '')}".strip()
+            )
+        if status not in {"WAITING", "PROGRESS"}:
+            raise PapagoFileTranslationError(
+                f"알 수 없는 Papago 문서 번역 상태입니다: {status}"
+            )
+
+        time.sleep(poll_interval)
+
+    raise PapagoFileTranslationError(
+        f"Papago 문서 번역이 {wait_timeout}초 안에 완료되지 않았습니다."
+    )
+
+
+def _download_document(
+    request_id: str,
+    *,
+    client_id: str | None,
+    client_secret: str | None,
+) -> tuple[bytes, str]:
+    headers = _auth_headers(client_id, client_secret)
+    try:
+        response = requests.get(
+            DOC_DOWNLOAD_URL,
+            headers=headers,
+            params={"requestId": request_id},
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        raise PapagoFileTranslationError(
+            f"Papago 문서 다운로드 네트워크 오류: {exc}"
+        ) from exc
+
+    _response_error(response, "Papago 문서 다운로드")
+    if not response.content:
+        raise PapagoFileTranslationError(
+            "Papago 문서 다운로드 결과가 비어 있습니다."
+        )
+    media_type = (
+        response.headers.get("Content-Type")
+        or "application/octet-stream"
+    ).split(";", 1)[0]
+    return response.content, media_type
+
+
+def translate_document_file(
+    content: bytes,
+    filename: str,
+    *,
+    source: str = "auto",
+    target: str = "en",
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    glossary_key: str | None = None,
+    request_timeout: int = 60,
+    wait_timeout: int = 300,
+    poll_interval: float = 2.0,
+) -> TranslatedFile:
+    """Translate Office/PDF/HWP and return the downloaded file bytes."""
+
+    if len(content) > MAX_DOCUMENT_FILE_BYTES:
+        raise ValueError("문서 파일은 100MB 이하여야 합니다.")
+
+    request_id = _request_document_translation(
+        content,
+        filename,
         source=source,
         target=target,
         client_id=client_id,
         client_secret=client_secret,
         glossary_key=glossary_key,
+        timeout=request_timeout,
     )
-    translated = get_translated_text(response)
-    if target == "en":
-        return normalize_resume_english(translated)
-    return translated
-
-
-def _make_batches(
-    texts: list[str],
-    max_chars: int = DEFAULT_BATCH_CHAR_LIMIT,
-) -> list[list[str]]:
-    """Split text values into batches below the configured character limit."""
-
-    if max_chars <= 0:
-        raise ValueError("max_chars must be greater than zero.")
-
-    batches: list[list[str]] = []
-    current_batch: list[str] = []
-    current_length = 0
-
-    for text in texts:
-        marker_length = len(BATCH_MARKER.format(index=len(current_batch)))
-        estimated_length = len(text) + marker_length + 2
-
-        if current_batch and current_length + estimated_length > max_chars:
-            batches.append(current_batch)
-            current_batch = []
-            current_length = 0
-            marker_length = len(BATCH_MARKER.format(index=0))
-            estimated_length = len(text) + marker_length + 2
-
-        current_batch.append(text)
-        current_length += estimated_length
-
-    if current_batch:
-        batches.append(current_batch)
-
-    return batches
-
-
-def _translate_text_batch(
-    texts: list[str],
-    *,
-    client_id: str | None = None,
-    client_secret: str | None = None,
-    glossary_key: str | None = None,
-) -> list[str]:
-    """Translate multiple values in one Papago request using stable markers."""
-
-    if not texts:
-        return []
-
-    combined_text = "\n".join(
-        f"{BATCH_MARKER.format(index=index)}\n{text}"
-        for index, text in enumerate(texts)
-    )
-    translated = translate_to_resume_english(
-        combined_text,
+    _wait_for_document(
+        request_id,
         client_id=client_id,
         client_secret=client_secret,
-        glossary_key=glossary_key,
+        wait_timeout=wait_timeout,
+        poll_interval=poll_interval,
+    )
+    translated_content, response_media_type = _download_document(
+        request_id,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+    output_name = _translated_filename(filename, target)
+    output_media_type = (
+        mimetypes.guess_type(output_name)[0]
+        or response_media_type
+        or "application/octet-stream"
+    )
+    return TranslatedFile(
+        content=translated_content,
+        filename=output_name,
+        media_type=output_media_type,
+        source_type="document",
     )
 
-    marker_pattern = re.compile(r"\[\[SPECGAP_FIELD_(\d{4})\]\]\s*")
-    marker_matches = list(marker_pattern.finditer(translated))
-    if len(marker_matches) != len(texts):
-        raise PapagoTranslationError(
-            "Papago batch markers were not preserved."
-        )
 
-    results = [""] * len(texts)
-    seen_indexes: set[int] = set()
+def _convert_image_to_original_suffix(
+    rendered_image: bytes,
+    suffix: str,
+) -> bytes:
+    output = io.BytesIO()
+    target_format = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".tif": "TIFF",
+        ".tiff": "TIFF",
+    }[suffix]
 
-    for match_position, match in enumerate(marker_matches):
-        field_index = int(match.group(1))
-        if field_index >= len(texts) or field_index in seen_indexes:
-            raise PapagoTranslationError(
-                "Papago returned invalid batch marker indexes."
-            )
-
-        start = match.end()
-        end = (
-            marker_matches[match_position + 1].start()
-            if match_position + 1 < len(marker_matches)
-            else len(translated)
-        )
-        field_text = translated[start:end].strip()
-        if not field_text:
-            raise PapagoTranslationError(
-                f"Papago returned an empty batch field: {field_index}"
-            )
-
-        results[field_index] = field_text
-        seen_indexes.add(field_index)
-
-    if len(seen_indexes) != len(texts):
-        raise PapagoTranslationError(
-            "Papago batch response is incomplete."
-        )
-    return results
+    try:
+        with Image.open(io.BytesIO(rendered_image)) as image:
+            if target_format == "JPEG" and image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+            image.save(output, format=target_format)
+    except Exception as exc:
+        raise PapagoFileTranslationError(
+            "번역 이미지 결과를 원본 확장자로 변환하지 못했습니다."
+        ) from exc
+    return output.getvalue()
 
 
-def _collect_translatable_texts(
-    value: Any,
-    parent_key: str | None = None,
-) -> list[str]:
-    """Collect Korean report values that should be translated."""
-
-    collected: list[str] = []
-
-    if isinstance(value, dict):
-        for key, child in value.items():
-            collected.extend(_collect_translatable_texts(child, key))
-    elif isinstance(value, list):
-        for child in value:
-            collected.extend(_collect_translatable_texts(child, parent_key))
-    elif (
-        isinstance(value, str)
-        and parent_key in TRANSLATABLE_REPORT_KEYS
-        and value.strip()
-        and _contains_korean(value)
-    ):
-        collected.append(value)
-
-    return collected
-
-
-def _apply_translations(
-    value: Any,
-    translations: dict[str, str],
-    parent_key: str | None = None,
-) -> Any:
-    """Return a new report value with translated strings applied."""
-
-    if isinstance(value, dict):
-        return {
-            key: _apply_translations(child, translations, key)
-            for key, child in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _apply_translations(child, translations, parent_key)
-            for child in value
-        ]
-    if (
-        isinstance(value, str)
-        and parent_key in TRANSLATABLE_REPORT_KEYS
-    ):
-        return translations.get(value, value)
-    return value
-
-
-def translate_analysis_report(
-    report: dict[str, Any],
+def translate_image_file(
+    content: bytes,
+    filename: str,
     *,
+    source: str = "auto",
+    target: str = "en",
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    timeout: int = 120,
+) -> TranslatedFile:
+    """Translate image text and return the rendered translated image."""
+
+    if len(content) > MAX_IMAGE_FILE_BYTES:
+        raise ValueError("이미지 파일은 20MB 이하여야 합니다.")
+
+    suffix = Path(filename).suffix.lower()
+    upload_suffix = ".tiff" if suffix == ".tif" else suffix
+    upload_name = f"{Path(filename).stem}{upload_suffix}"
+    media_type = mimetypes.guess_type(upload_name)[0] or "application/octet-stream"
+
+    headers = _auth_headers(client_id, client_secret)
+    files = {"image": (upload_name, content, media_type)}
+    data = {"source": source, "target": target}
+
+    try:
+        response = requests.post(
+            IMAGE_TRANSLATION_URL,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise PapagoFileTranslationError(
+            f"Papago 이미지 번역 네트워크 오류: {exc}"
+        ) from exc
+
+    payload = _response_json(response, "Papago 이미지 번역")
+    encoded_image = payload.get("data", {}).get("renderedImage")
+    if not isinstance(encoded_image, str) or not encoded_image:
+        raise PapagoFileTranslationError(
+            "Papago 이미지 응답에 renderedImage가 없습니다."
+        )
+
+    try:
+        rendered_image = base64.b64decode(encoded_image, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise PapagoFileTranslationError(
+            "Papago renderedImage Base64 디코딩에 실패했습니다."
+        ) from exc
+
+    converted_image = _convert_image_to_original_suffix(
+        rendered_image,
+        suffix,
+    )
+    output_name = _translated_filename(filename, target)
+    output_media_type = (
+        mimetypes.guess_type(output_name)[0] or "application/octet-stream"
+    )
+    return TranslatedFile(
+        content=converted_image,
+        filename=output_name,
+        media_type=output_media_type,
+        source_type="image",
+    )
+
+
+def translate_resume_file(
+    content: bytes,
+    filename: str,
+    *,
+    source: str = "auto",
+    target: str = "en",
     client_id: str | None = None,
     client_secret: str | None = None,
     glossary_key: str | None = None,
-    max_batch_chars: int = DEFAULT_BATCH_CHAR_LIMIT,
-) -> dict[str, Any]:
-    """
-    Translate a report in batches while preserving its original JSON shape.
+) -> TranslatedFile:
+    """Route an uploaded resume to Text, Doc, or Image Translation."""
 
-    Duplicate values are translated once. If one batch fails or Papago changes
-    its markers, only that batch falls back to the original Korean values.
-    """
+    if not content:
+        raise ValueError("빈 파일은 번역할 수 없습니다.")
 
-    if not isinstance(report, dict):
-        raise ValueError("report must be a dictionary.")
+    safe_name = Path(filename).name
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in SUPPORTED_FILE_SUFFIXES:
+        supported = ", ".join(sorted(SUPPORTED_FILE_SUFFIXES))
+        raise ValueError(
+            f"지원하지 않는 번역 파일 형식입니다: {suffix or '확장자 없음'}. "
+            f"지원 형식: {supported}"
+        )
 
-    collected = _collect_translatable_texts(report)
-    unique_texts = list(dict.fromkeys(collected))
-    if not unique_texts:
-        return report.copy()
-
-    translations: dict[str, str] = {}
-    for batch in _make_batches(unique_texts, max_batch_chars):
-        try:
-            translated_batch = _translate_text_batch(
-                batch,
-                client_id=client_id,
-                client_secret=client_secret,
-                glossary_key=glossary_key,
-            )
-        except (PapagoTranslationError, ValueError):
-            # Preserve the Korean source values for only the failed batch.
-            continue
-
-        translations.update(zip(batch, translated_batch))
-
-    return _apply_translations(report, translations)
+    if suffix in TEXT_FILE_SUFFIXES:
+        return translate_txt_file(
+            content,
+            safe_name,
+            source=source,
+            target=target,
+            client_id=client_id,
+            client_secret=client_secret,
+            glossary_key=glossary_key,
+        )
+    if suffix in DOCUMENT_FILE_SUFFIXES:
+        return translate_document_file(
+            content,
+            safe_name,
+            source=source,
+            target=target,
+            client_id=client_id,
+            client_secret=client_secret,
+            glossary_key=glossary_key,
+        )
+    return translate_image_file(
+        content,
+        safe_name,
+        source=source,
+        target=target,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
