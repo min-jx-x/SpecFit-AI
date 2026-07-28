@@ -337,7 +337,9 @@ if uploaded_file is not None:
 
                     # '60점' 문자열에서 숫자 추출
                     try:
-                        score_value = int(re.sub(r'[^0-9]', '', fit_score_str))
+                        fit_score_input = str(fit_score_str) if fit_score_str is not None else "0"
+                        digits_only = re.sub(r'[^0-9]', '', fit_score_input)
+                        score_value = int(digits_only) if digits_only else 0
                     except ValueError:
                         score_value = 0
 

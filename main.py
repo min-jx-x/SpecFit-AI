@@ -21,6 +21,11 @@ from services.papago import (
     translate_analysis_report,
 )
 
+# PDF 텍스트 추출을 위한 pypdf 라이브러리 추가 (pip install pypdf 필요)
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SpecFit-Main")
@@ -58,6 +63,64 @@ def verify_api_key(x_api_key: Optional[str]) -> None:
         )
 
 
+def process_uploaded_file(file_path: str, suffix: str) -> dict:
+    """
+    파일 확장자에 따라 OCR, PDF 파싱, TXT/JSON 읽기를 수행하는 통합 함수입니다.
+    """
+    suffix = suffix.lower()
+
+    # 1. 일반 텍스트 및 JSON 파일 처리
+    if suffix in [".txt", ".json"]:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                text_content = f.read()
+        except UnicodeDecodeError:
+            with open(file_path, "r", encoding="cp949", errors="ignore") as f:
+                text_content = f.read()
+
+        return {
+            "text": text_content,
+            "keywords": {"extracted": "직접 텍스트 읽기"},
+            "scores": {},
+            "certifications": [],
+            "structured_fields": {"raw_text": text_content[:500]},
+            "source_type": f"text_file ({suffix})",
+        }
+
+    # 2. PDF 파일 처리
+    elif suffix == ".pdf":
+        pdf_text = ""
+        if PdfReader is not None:
+            try:
+                reader = PdfReader(file_path)
+                extracted_pages = []
+                for page in reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        extracted_pages.append(page_text)
+                pdf_text = "\n".join(extracted_pages).strip()
+            except Exception as e:
+                logger.warning(f"[PDF] pypdf 읽기 실패: {e}")
+
+        # PDF에서 텍스트를 못 뽑은 경우(스캔 이미지 PDF) -> CLOVA OCR Fallback
+        if not pdf_text:
+            logger.info("[File/Parser] PDF 텍스트 추출 불가 (스캔 이미지 가능성) -> CLOVA OCR 시도")
+            return extract_spec_from_file(file_path)
+
+        return {
+            "text": pdf_text,
+            "keywords": {"extracted": "PDF 텍스트 파싱"},
+            "scores": {},
+            "certifications": [],
+            "structured_fields": {"raw_text": pdf_text[:500]},
+            "source_type": "pdf_document",
+        }
+
+    # 3. 이미지 및 기타 서류 파일 -> CLOVA OCR 처리 (.jpg, .jpeg, .png, .tif 등)
+    else:
+        return extract_spec_from_file(file_path)
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "message": "SpecFit-AI Backend Server is running"}
@@ -71,7 +134,7 @@ async def analyze_spec_endpoint(
     x_api_key: Optional[str] = Header(None),
 ):
     """
-    1. TXT 직접 읽기 또는 CLOVA OCR 이미지 텍스트 추출
+    1. TXT/PDF 직접 읽기 또는 CLOVA OCR 이미지 텍스트 추출
     2. PostgreSQL/pgvector 합격자 유사 스펙 검색
     3. CLOVA Studio 스펙 갭 분석
     4. Papago 전체 분석 리포트 영문 번역
@@ -99,8 +162,11 @@ async def analyze_spec_endpoint(
             tmp.write(content)
             tmp_path = tmp.name
 
-        logger.info("[File/OCR] 스펙 서류 분석 중")
-        extraction_result = extract_spec_from_file(tmp_path)
+        logger.info("[File/OCR] 스펙 서류 분석 중 (확장자: %s)", suffix)
+        
+        # 💡 [수정 포인트] 확장자별 통합 파싱 함수 호출
+        extraction_result = process_uploaded_file(tmp_path, suffix)
+
         extracted_text = extraction_result.get("text", "")
         extracted_keywords = extraction_result.get("keywords", {})
         extracted_scores = extraction_result.get("scores", {})
@@ -110,7 +176,7 @@ async def analyze_spec_endpoint(
 
         if not extracted_text.strip():
             logger.warning(
-                "[File/OCR] 추출된 텍스트가 비어 있습니다. OCR 응답 또는 파일 내용을 확인하세요."
+                "[File/OCR] 추출된 텍스트가 비어 있습니다. 파일 내용 또는 OCR 응답을 확인하세요."
             )
         else:
             logger.info(
@@ -193,6 +259,7 @@ async def analyze_spec_endpoint(
                 "certifications": extracted_certs,
             },
             "retrieved_reference_count": len(retrieved_specs_list),
+            "retrieved_specs": retrieved_db_results,  # 👈 DB 원본 리스트도 함께 전달하도록 추가
             "analysis_report": analysis_report,
             "cover_letter": cover_letter_result,
             "translated_english": english_report,
