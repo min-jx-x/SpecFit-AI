@@ -20,7 +20,7 @@ load_dotenv()
 OCR_INVOKE_URL_ENV = ("NCP_CLOVA_OCR_INVOKE_URL", "CLOVA_OCR_INVOKE_URL")
 OCR_SECRET_ENV = ("NCP_CLOVA_OCR_SECRET", "CLOVA_OCR_SECRET")
 OCR_FILE_SUFFIXES = {".jpg", ".jpeg", ".png", ".pdf", ".tif", ".tiff"}
-TEXT_FILE_SUFFIXES = {".txt", ".json"}
+TEXT_FILE_SUFFIXES = {".txt"}
 TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
 
 DEFAULT_TECH_KEYWORDS = {
