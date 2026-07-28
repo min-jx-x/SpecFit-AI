@@ -40,7 +40,6 @@ logger = logging.getLogger("SpecFit-Main")
 
 ALLOWED_FILE_SUFFIXES = {
     ".txt",
-    ".json",
     ".docx",
     ".jpg",
     ".jpeg",
@@ -81,11 +80,11 @@ def verify_api_key(x_api_key: Optional[str]) -> None:
 
 
 def process_uploaded_file(file_path: str, suffix: str) -> dict:
-    """Extract and parse TXT, JSON, DOCX, PDF, or image content."""
+    """Extract and parse TXT, DOCX, PDF, or image content."""
 
     suffix = suffix.lower()
 
-    if suffix in {".txt", ".json", ".docx"}:
+    if suffix in {".txt", ".docx"}:
         return extract_spec_from_file(file_path)
 
     if suffix == ".pdf":
@@ -167,7 +166,7 @@ async def translate_file_endpoint(
         logger.error("Papago 파일 번역 실패: %s", exc)
         raise HTTPException(
             status_code=502,
-            detail="Papago 파일 번역에 실패했습니다.",
+            detail=f"Papago 파일 번역에 실패했습니다: {str(exc)[:500]}",
         ) from exc
 
     encoded_name = quote(translated.filename)
