@@ -1,9 +1,11 @@
+import io
 import json
 import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -12,36 +14,51 @@ load_dotenv(BASE_DIR / ".env")
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from rag.build_rag import search_vector_db
-from services.clova_ocr import ClovaOcrError, extract_spec_from_file
+from services.clova_ocr import (
+    ClovaOcrError,
+    extract_spec_from_file,
+    parse_text_content,
+)
 from services.llm_engine import analyze_spec_gap, generate_cover_letter
 from services.papago import (
-    PapagoTranslationError,
-    translate_analysis_report,
+    PapagoFileTranslationError,
+    SUPPORTED_FILE_SUFFIXES,
+    translate_resume_file,
 )
 
-# PDF 텍스트 추출을 위한 pypdf 라이브러리 추가 (pip install pypdf 필요)
 try:
     from pypdf import PdfReader
 except ImportError:
     PdfReader = None
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SpecFit-Main")
 
 ALLOWED_FILE_SUFFIXES = {
-    ".txt", ".json", ".jpg", ".jpeg", ".png", ".pdf", ".tif", ".tiff"
+    ".txt",
+    ".json",
+    ".docx",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".pdf",
+    ".tif",
+    ".tiff",
 }
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_ANALYSIS_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_TRANSLATION_UPLOAD_BYTES = 100 * 1024 * 1024
 
 app = FastAPI(
     title="SpecFit-AI Backend API",
     description=(
         "NCP CLOVA OCR, Cloud DB for PostgreSQL(pgvector), "
-        "CLOVA Studio, Papago 기반 스펙 갭 분석 API"
+        "CLOVA Studio, Papago 파일 번역 기반 SpecFit API"
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -64,66 +81,107 @@ def verify_api_key(x_api_key: Optional[str]) -> None:
 
 
 def process_uploaded_file(file_path: str, suffix: str) -> dict:
-    """
-    파일 확장자에 따라 OCR, PDF 파싱, TXT/JSON 읽기를 수행하는 통합 함수입니다.
-    """
+    """Extract and parse TXT, JSON, DOCX, PDF, or image content."""
+
     suffix = suffix.lower()
 
-    # 1. 일반 텍스트 및 JSON 파일 처리
-    if suffix in [".txt", ".json"]:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                text_content = f.read()
-        except UnicodeDecodeError:
-            with open(file_path, "r", encoding="cp949", errors="ignore") as f:
-                text_content = f.read()
+    if suffix in {".txt", ".json", ".docx"}:
+        return extract_spec_from_file(file_path)
 
-        return {
-            "text": text_content,
-            "keywords": {"extracted": "직접 텍스트 읽기"},
-            "scores": {},
-            "certifications": [],
-            "structured_fields": {"raw_text": text_content[:500]},
-            "source_type": f"text_file ({suffix})",
-        }
-
-    # 2. PDF 파일 처리
-    elif suffix == ".pdf":
+    if suffix == ".pdf":
         pdf_text = ""
         if PdfReader is not None:
             try:
                 reader = PdfReader(file_path)
-                extracted_pages = []
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        extracted_pages.append(page_text)
+                extracted_pages = [
+                    page_text
+                    for page in reader.pages
+                    if (page_text := page.extract_text())
+                ]
                 pdf_text = "\n".join(extracted_pages).strip()
-            except Exception as e:
-                logger.warning(f"[PDF] pypdf 읽기 실패: {e}")
+            except Exception as exc:
+                logger.warning("[PDF] pypdf 읽기 실패: %s", exc)
 
-        # PDF에서 텍스트를 못 뽑은 경우(스캔 이미지 PDF) -> CLOVA OCR Fallback
         if not pdf_text:
-            logger.info("[File/Parser] PDF 텍스트 추출 불가 (스캔 이미지 가능성) -> CLOVA OCR 시도")
+            logger.info(
+                "[File/Parser] PDF 직접 추출 실패 -> CLOVA OCR 시도"
+            )
             return extract_spec_from_file(file_path)
 
-        return {
-            "text": pdf_text,
-            "keywords": {"extracted": "PDF 텍스트 파싱"},
-            "scores": {},
-            "certifications": [],
-            "structured_fields": {"raw_text": pdf_text[:500]},
-            "source_type": "pdf_document",
-        }
+        parsed = parse_text_content(pdf_text)
+        parsed["source_type"] = "pdf_document"
+        return parsed
 
-    # 3. 이미지 및 기타 서류 파일 -> CLOVA OCR 처리 (.jpg, .jpeg, .png, .tif 등)
-    else:
-        return extract_spec_from_file(file_path)
+    return extract_spec_from_file(file_path)
 
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "SpecFit-AI Backend Server is running"}
+    return {
+        "status": "ok",
+        "message": "SpecFit-AI Backend Server is running",
+    }
+
+
+@app.post("/api/translate-file")
+async def translate_file_endpoint(
+    file: UploadFile = File(...),
+    source: str = Form("auto"),
+    target: str = Form("en"),
+    x_api_key: Optional[str] = Header(None),
+):
+    """Translate an uploaded resume and return a downloadable file."""
+
+    verify_api_key(x_api_key)
+
+    filename = Path(file.filename or "").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_FILE_SUFFIXES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "지원하지 않는 번역 파일 형식입니다: "
+                f"{suffix or '확장자 없음'}"
+            ),
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+    if len(content) > MAX_TRANSLATION_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="번역 파일은 최대 100MB까지 업로드할 수 있습니다.",
+        )
+
+    try:
+        translated = translate_resume_file(
+            content,
+            filename,
+            source=source,
+            target=target,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PapagoFileTranslationError as exc:
+        logger.error("Papago 파일 번역 실패: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Papago 파일 번역에 실패했습니다.",
+        ) from exc
+
+    encoded_name = quote(translated.filename)
+    response_headers = {
+        "Content-Disposition": (
+            f"attachment; filename*=UTF-8''{encoded_name}"
+        ),
+        "X-Translated-Filename": encoded_name,
+    }
+    return StreamingResponse(
+        io.BytesIO(translated.content),
+        media_type=translated.media_type,
+        headers=response_headers,
+    )
 
 
 @app.post("/api/analyze")
@@ -134,15 +192,15 @@ async def analyze_spec_endpoint(
     x_api_key: Optional[str] = Header(None),
 ):
     """
-    1. TXT/PDF 직접 읽기 또는 CLOVA OCR 이미지 텍스트 추출
+    1. TXT/PDF/DOCX 직접 추출 또는 CLOVA OCR 이미지 텍스트 추출
     2. PostgreSQL/pgvector 합격자 유사 스펙 검색
     3. CLOVA Studio 스펙 갭 분석
-    4. Papago 전체 분석 리포트 영문 번역
+    4. CLOVA Studio 한국어 자기소개서 생성
     """
 
     verify_api_key(x_api_key)
-    filename = file.filename or ""
-    suffix = os.path.splitext(filename)[1].lower()
+    filename = Path(file.filename or "").name
+    suffix = Path(filename).suffix.lower()
 
     if suffix not in ALLOWED_FILE_SUFFIXES:
         raise HTTPException(
@@ -153,18 +211,22 @@ async def analyze_spec_endpoint(
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="파일은 10MB 이하여야 합니다.")
+    if len(content) > MAX_ANALYSIS_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="분석 파일은 10MB 이하여야 합니다.",
+        )
 
     tmp_path = ""
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix,
+        ) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
 
-        logger.info("[File/OCR] 스펙 서류 분석 중 (확장자: %s)", suffix)
-        
-        # 💡 [수정 포인트] 확장자별 통합 파싱 함수 호출
+        logger.info("[File/OCR] 문서 분석 중 (확장자: %s)", suffix)
         extraction_result = process_uploaded_file(tmp_path, suffix)
 
         extracted_text = extraction_result.get("text", "")
@@ -175,16 +237,14 @@ async def analyze_spec_endpoint(
         source_type = extraction_result.get("source_type", "unknown")
 
         if not extracted_text.strip():
-            logger.warning(
-                "[File/OCR] 추출된 텍스트가 비어 있습니다. 파일 내용 또는 OCR 응답을 확인하세요."
-            )
-        else:
-            logger.info(
-                "[File/OCR] 추출 완료 (source=%s, chars=%d, fields=%d)",
-                source_type,
-                len(extracted_text),
-                len(structured_fields),
-            )
+            raise ValueError("파일에서 분석할 텍스트를 찾지 못했습니다.")
+
+        logger.info(
+            "[File/OCR] 추출 완료 (source=%s, chars=%d, fields=%d)",
+            source_type,
+            len(extracted_text),
+            len(structured_fields),
+        )
 
         formatted_user_spec = f"""
 [추출된 전체 서류 텍스트]
@@ -212,9 +272,8 @@ async def analyze_spec_endpoint(
                 top_k=3,
             )
 
-        retrieved_specs_list = []
-        for item in retrieved_db_results:
-            retrieved_specs_list.append(
+        retrieved_specs_list = [
+            (
                 f"기업: {item.get('company')}, "
                 f"직무: {item.get('job_category')}\n"
                 f"학점: {item.get('gpa')}, "
@@ -223,6 +282,8 @@ async def analyze_spec_endpoint(
                 f"인턴: {item.get('internship')}\n"
                 f"경험 상세: {item.get('experience_summary')}"
             )
+            for item in retrieved_db_results
+        ]
 
         analysis_report = analyze_spec_gap(
             user_spec=formatted_user_spec,
@@ -242,12 +303,6 @@ async def analyze_spec_endpoint(
             logger.warning("자기소개서 생성 실패: %s", exc)
             cover_letter_result = "자기소개서 초안 생성에 실패했습니다."
 
-        try:
-            english_report = translate_analysis_report(analysis_report)
-        except (PapagoTranslationError, ValueError) as exc:
-            logger.warning("Papago 전체 리포트 번역 실패: %s", exc)
-            english_report = {}
-
         return {
             "status": "success",
             "parsed_user_spec": {
@@ -259,15 +314,16 @@ async def analyze_spec_endpoint(
                 "certifications": extracted_certs,
             },
             "retrieved_reference_count": len(retrieved_specs_list),
-            "retrieved_specs": retrieved_db_results,  # 👈 DB 원본 리스트도 함께 전달하도록 추가
             "analysis_report": analysis_report,
             "cover_letter": cover_letter_result,
-            "translated_english": english_report,
         }
 
     except ClovaOcrError as exc:
         logger.error("CLOVA OCR 처리 오류: %s", exc)
-        raise HTTPException(status_code=502, detail="OCR 처리에 실패했습니다.") from exc
+        raise HTTPException(
+            status_code=502,
+            detail="OCR 처리에 실패했습니다.",
+        ) from exc
     except ValueError as exc:
         logger.warning("파일 처리 오류: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
