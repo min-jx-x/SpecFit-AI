@@ -287,6 +287,7 @@ if uploaded_file is not None:
             st.warning(f"{text_source[14]}")
         else:
             analysis_report = None
+            cover_letter = None
             with st.spinner(f"⏳ {company_name} [{job_position}] {text_source[15]}"):
                 try:
                     # 전송 데이터 구성
@@ -324,7 +325,7 @@ if uploaded_file is not None:
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
                     st.warning(f"{text_source[20]}")
                     analysis_report = MOCK_ANALYSIS_REPORT
-                    cover_letter=None
+
                 except Exception as e:
                     st.error(f"{text_source[21]} {e}")
 
