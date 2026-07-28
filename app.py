@@ -1,11 +1,16 @@
+import base64
+import io
 import os
 import re
+import zipfile
 from pathlib import Path
 from urllib.parse import unquote
+from xml.etree import ElementTree
 
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 from streamlit_float import float_init
 
@@ -112,6 +117,89 @@ TRANSLATE_API_URL = os.getenv(
     "TRANSLATE_API_URL",
     f"{DEFAULT_API_BASE}/api/translate-file",
 )
+
+
+def _extract_docx_preview(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            document_xml = archive.read("word/document.xml")
+        root = ElementTree.fromstring(document_xml)
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return ""
+
+    namespace = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    }
+    paragraphs: list[str] = []
+    for paragraph in root.findall(".//w:p", namespace):
+        text = "".join(
+            node.text or ""
+            for node in paragraph.findall(".//w:t", namespace)
+        )
+        if text.strip():
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
+def _show_translated_resume_preview(translated_resume: dict) -> None:
+    content = translated_resume["content"]
+    suffix = Path(translated_resume["filename"]).suffix.lower()
+
+    st.markdown(
+        '<div class="card-title-lg" style="margin-top:20px;">'
+        "웹 미리보기</div>",
+        unsafe_allow_html=True,
+    )
+
+    if suffix == ".txt":
+        st.text_area(
+            "번역 결과",
+            value=content.decode("utf-8-sig", errors="replace"),
+            height=420,
+            disabled=True,
+            key="translated_txt_preview",
+        )
+        return
+
+    if suffix in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}:
+        st.image(content, caption="번역 이미지", use_container_width=True)
+        return
+
+    if suffix == ".pdf":
+        if len(content) > 20 * 1024 * 1024:
+            st.info("20MB를 초과한 PDF는 다운로드로 확인해 주세요.")
+            return
+        encoded_pdf = base64.b64encode(content).decode("ascii")
+        components.html(
+            f'<iframe src="data:application/pdf;base64,{encoded_pdf}" '
+            'width="100%" height="760" style="border:0;"></iframe>',
+            height=780,
+            scrolling=True,
+        )
+        return
+
+    if suffix == ".docx":
+        preview_text = _extract_docx_preview(content)
+        if preview_text:
+            st.text_area(
+                "번역 결과",
+                value=preview_text,
+                height=520,
+                disabled=True,
+                key="translated_docx_preview",
+            )
+            st.caption(
+                "DOCX 웹 미리보기는 텍스트 확인용이며, 원본 배치는 "
+                "다운로드한 파일에서 확인할 수 있습니다."
+            )
+        else:
+            st.info("DOCX 미리보기를 생성하지 못했습니다. 다운로드로 확인해 주세요.")
+        return
+
+    st.info(
+        "이 형식은 브라우저 미리보기를 지원하지 않습니다. "
+        "다운로드한 파일로 확인해 주세요."
+    )
 
 MOCK_ANALYSIS_REPORT = {
     "target": {"company": "네이버", "position": "백엔드 개발자"},
@@ -673,3 +761,4 @@ if (
         mime=translated_resume["media_type"],
         key="download_translated_resume",
     )
+    _show_translated_resume_preview(translated_resume)
