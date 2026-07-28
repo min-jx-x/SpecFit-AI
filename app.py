@@ -415,88 +415,69 @@ if st.button(
             )
             score_value = int(digits_only) if digits_only else 0
 
-            st.markdown(
-                "<hr style='border:none; border-top:1px solid #334155; "
-                "margin: 32px 0;'>",
-                unsafe_allow_html=True,
-            )
-            r_col1, r_col2 = st.columns([0.45, 0.55])
+            # --- Score Header & Gauge (간격 촘촘하게 최적화) ---
+            # 구분선 위아래 마진 축소 (기존 32px -> 16px)
+            st.markdown("<hr style='border:none; border-top:1px solid #334155; margin: 16px 0 12px 0;'>", unsafe_allow_html=True)
+
+            r_col1, r_col2 = st.columns([0.4, 0.6])
 
             with r_col1:
-                fig = go.Figure(
-                    go.Indicator(
-                        mode="gauge+number",
-                        value=score_value,
-                        domain={"x": [0.05, 0.95], "y": [0.05, 0.95]},
-                        number={
-                            "suffix": "점",
-                            "font": {
-                                "color": "#F8FAFC",
-                                "size": 26,
-                                "family": "Pretendard, sans-serif",
-                            },
+                fig = go.Figure(go.Indicator(
+                    mode="gauge",
+                    value=score_value,
+                    # domain y범위를 [0.1, 0.95]로 지정해 위아래 잘림 완벽 방지
+                    domain={'x': [0, 1], 'y': [0.1, 0.95]},
+                    gauge={
+                        'axis': {
+                            'range': [0, 100],
+                            'tickwidth': 1,
+                            'tickcolor': "#475569",
+                            'tickfont': {'size': 10, 'color': '#94A3B8'}
                         },
-                        gauge={
-                            "axis": {
-                                "range": [0, 100],
-                                "tickwidth": 1,
-                                "tickcolor": "#475569",
-                                "tickfont": {
-                                    "size": 11,
-                                    "color": "#94A3B8",
-                                },
-                            },
-                            "bar": {
-                                "color": "#3B82F6",
-                                "thickness": 0.6,
-                            },
-                            "bgcolor": "#1E293B",
-                            "borderwidth": 0,
-                            "steps": [
-                                {
-                                    "range": [0, 40],
-                                    "color": "rgba(244,63,94,0.25)",
-                                },
-                                {
-                                    "range": [40, 70],
-                                    "color": "rgba(245,158,11,0.25)",
-                                },
-                                {
-                                    "range": [70, 100],
-                                    "color": "rgba(16,185,129,0.25)",
-                                },
-                            ],
-                        },
-                    )
-                )
+                        'bar': {'color': "#3B82F6", 'thickness': 0.55},
+                        'bgcolor': "#1E293B",
+                        'borderwidth': 0,
+                        'steps': [
+                            {'range': [0, 40], 'color': 'rgba(244, 63, 94, 0.25)'},
+                            {'range': [40, 70], 'color': 'rgba(245, 158, 11, 0.25)'},
+                            {'range': [70, 100], 'color': 'rgba(16, 185, 129, 0.25)'}
+                        ],
+                    }
+                ))
+                
+                # 상단 마진(t)을 20으로 늘리고 전체 높이(height)를 135px로 조절
                 fig.update_layout(
-                    margin={"l": 25, "r": 25, "t": 25, "b": 15},
-                    height=190,
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(l=10, r=10, t=20, b=0),
+                    height=135,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)'
                 )
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    config={"displayModeBar": False},
-                )
-
-            with r_col2:
+                
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                
+                # 음수 margin-top을 -50px로 자연스럽게 정돈
                 st.markdown(f"""
-                    <div style="padding-top: 20px;">
-                        <span style="font-size: 11px; text-transform: uppercase; tracking-wider: 0.1em; color: #94A3B8;">TARGET</span>
-                        <h2 style="font-size: 28px; font-weight: 500; color: #F8FAFC; margin: 4px 0;">
-                            기업 <span style="color: #3B82F6;">{company}</span> · 직책 <span style="color: #3B82F6;">{position}</span>
-                        </h2>
-                        <p style="font-size: 14px; color: #94A3B8;">종합 적합도 점수는 <b style="color: #F8FAFC;">{fit_score_str}</b> 입니다.</p>
+                    <div style="text-align: center; margin-top: -65px; margin-bottom: 0px;">
+                        <span style="font-size: 26px; font-weight: 700; color: #F8FAFC; letter-spacing: -0.5px;">
+                            {score_value}<span style="font-size: 16px; font-weight: 500; color: #94A3B8; margin-left: 2px;">점</span>
+                        </span>
                     </div>
                 """, unsafe_allow_html=True)
 
-            st.markdown(
-                '<div class="card-title-lg" style="margin-top: 32px; '
-                'margin-bottom: 16px;">스펙 비교</div>',
-                unsafe_allow_html=True,
-            )
+            with r_col2:
+                # 우측 텍스트 패딩 축소 (padding-top: 5px)
+                st.markdown(f"""
+                    <div style="padding-top: 5px;">
+                        <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #94A3B8;">TARGET</span>
+                        <h2 style="font-size: 24px; font-weight: 600; color: #F8FAFC; margin: 2px 0; line-height: 1.2;">
+                            기업 <span style="color: #3B82F6;">{company}</span> &middot; 직책 <span style="color: #3B82F6;">{position}</span>
+                        </h2>
+                        <p style="font-size: 13.5px; color: #94A3B8; margin-top: 4px;">종합 적합도 점수는 <b style="color: #F8FAFC;">{fit_score_str}</b> 입니다.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            # --- 스펙 비교 섹션 타이틀 마진 축소 (기존 margin-top: 32px -> 12px) ---
+            st.markdown('<div class="card-title-lg" style="margin-top: 12px; margin-bottom: 12px;">스펙 비교</div>', unsafe_allow_html=True)
             t_col1, t_col2, t_col3, t_col4 = st.columns(
                 [0.35, 0.25, 0.25, 0.15]
             )
