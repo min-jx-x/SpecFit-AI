@@ -306,6 +306,7 @@ if uploaded_file is not None:
                                 cover_letter=res.get("cover_letter")
                             else:
                                 analysis_report = res.get("analysis_report")
+                                cover_letter = res.get("cover_letter")
 
                             if not isinstance(analysis_report, dict) or not analysis_report.get("summary"):
                                 st.error(f"{text_source[17]}")
