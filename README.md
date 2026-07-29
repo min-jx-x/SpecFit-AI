@@ -41,6 +41,11 @@
 * **Visualization:** Plotly (Interactive Gauge Charts)
 * **Design/Layout:** Custom CSS (TanStack/React Dashboard Layout Porting)
 
+### Backend Pipeline & Orchestration Architecture
+- **파이프라인 오케스트레이션 (Pipeline Orchestration)**: FastAPI 백엔드(`main.py`)가 `CLOVA OCR ➔ pgvector RAG ➔ LLM Engine ➔ Papago API`로 이어지는 멀티 AI 파이프라인의 데이터 흐름과 호출 순서를 전담 제어합니다.
+- **컨테이너 오케스트레이션 (Containerization)**: `Dockerfile` 및 `docker-compose.yml`을 통해 백엔드, 프론트엔드, DB 환경을 격리하고 단일 명령어 (`docker-compose up`)로 환경 종속성 없는 원클릭 배포를 일원화했습니다.
+- **결함 허용 및 보안 설계 (Fault Tolerance & Security)**: DB 타임아웃 및 외부 API 장애 발생 시 서버 락업을 방지하는 예외 처리(Fallback) 로직을 적용하였으며, NCP ACG(Access Control Group) 기반 최소 권한 인바운드 규칙으로 인프라 보안을 강화했습니다.
+
 ---
 
 ## 4. 시스템 아키텍처 (System Architecture)
@@ -61,6 +66,7 @@ flowchart LR
     Trans --> API
     API -->|JSON Response| UI
 ```
+
 ## 📂 5. 프로젝트 구조 (Directory Structure)
 
 ```text
