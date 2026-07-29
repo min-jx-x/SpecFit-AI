@@ -137,11 +137,11 @@ streamlit run app.py
 
 | 이름 | 담당 역할 | 주요 기여 내용 |
 | :---: | :---: | :--- |
-| **강민재** | **PM & Backend Lead** | - FastAPI 기반 전체 API 파이프라인 수립 및 인프라 아키텍처 설계<br>- NCP Compute Server 배포, 프로세스(Uvicorn/Streamlit) 생명주기 관리 |
+| **강민재** | **PM & Backend Lead** | - FastAPI 기반 AI 분석 파이프라인 수립 및 오케스트레이션 전담<br>- Docker/Compose 기반 컨테이너화 및 NCP 서버·ACG 방화벽 인프라 구축 |
 | **유희찬** | **Frontend & UI/UX** | - Streamlit 대시보드 UI/UX 설계 및 Enterprise SaaS 다크 테마 커스텀 CSS 구축<br>- Plotly 게이지 차트 및 반응형 자소서/이력서 탭(Tab) 뷰어 구현 |
 | **김대현** | **RAG & DB Engineer** | - NCP Cloud DB for PostgreSQL 구축 및 `pgvector` 벡터 검색 알고리즘 구현<br>- 합격자 스펙 데이터셋 전처리, 임베딩 파이프라인 및 RAG 검색 최적화 |
 | **김성범** | **AI & OCR Engineer** | - NCP CLOVA OCR API 연동 및 이미지/PDF 서류 파싱 예외 처리 통합 로직 개발<br>- 서류 내 주요 키워드(어학, 자격증, 기술 스택) 추출 파서 설계 |
-| **박창연** | **LLM Prompt & Translation** | - 스펙 갭 진단, 직무 적합도(Fit Score), 자기소개서 생성 프롬프트 엔지니어링<br>- NCP Papago API 연동 및 이력서 도메인 특화 용어 사전(Glossary) 매핑 개발 |
+| **박창연** | **LLM Prompt & Translation** | - 스펙 갭 진단, 직무 적합도(Fit Score), 자기소개서 생성 프롬프트 엔지니어링<br>- NCP Papago API 연동 및 이력서 도메인 특화 용어 사전 매핑 개발 |
 
 ---
 
